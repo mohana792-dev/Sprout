@@ -231,6 +231,7 @@ body{font-family:var(--f);background:var(--bg);color:var(--ink);height:100%;font
         <button class="tt" onclick="setTTab('expenses',this)">🧾 Spend</button>
       </div>
       <div class="card" id="t-fields"></div>
+      <div id="t-shocks"></div>
       <div style="padding:0 14px;margin-bottom:10px">
         <div class="clbl" style="margin-bottom:6px">📝 Notes</div>
         <textarea class="noteinp" id="t-notes" rows="3" placeholder="Anything to remember about this month…"></textarea>
@@ -340,93 +341,73 @@ body{font-family:var(--f);background:var(--bg);color:var(--ink);height:100%;font
 
 <script>
 'use strict';
-/* ============ SPROUT · core state & data model ============ */
-var SCHEMA = 2;
-var S = {
-  v:SCHEMA, onboarded:false, name:'', email:'',
-  inflation:0.06, increment:0.08, sipStep:0.10,
-  bearMult:0.6, baseMult:1.0, bullMult:1.4,
-  ejsKey:'', ejsService:'', ejsTemplate:'',
-  overrides:{}            // {2:{type:'pct',value:30}} forward-year salary jumps
-};
-var income=[], invests=[], expenses=[], liabs=[], events=[];
-var pastSnaps={};         // {'2024':{investId:closingValue}}  display-only history
-var monthData={};         // {'FY_m': {...actuals, _saved}}
+/* ============ SPROUT v3 · simple model ============ */
+var SCHEMA=3;
+var S={ v:SCHEMA, onboarded:false, name:'',
+        inflation:0.06, bearMult:0.6, baseMult:1.0, bullMult:1.4 };
+var income=[];   // {id,name,monthly}
+var invests=[];  // {id,name,monthly,ret,openVal,market,cash?,ic}
+var expenses=[]; // {id,name,monthly}
+var liabs=[];    // {id,name,outstanding,emi,borrow?}
+var monthData={};// key -> {inc:{},inv:{},exp:{},shocks:[],notes,_saved,_applied}
+var setupTasks=[]; // {id,lbl,sub}
 var checkState={}, customTasks=[], bills=[];
 
-var curScen='base', wYear=5, rnMode='nom', tTab='income', tMonth=0;
+var curScen='base', wYear=5, rnMode='nom', tTab='income', tMonth=-1;
 var ringCh=null, barCh=null;
 
 var MN=['April','May','June','July','August','September','October','November','December','January','February','March'];
 var MS=['Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar'];
 
-/* ---- live financial-year clock (April = month 0) ---- */
 function today(){return new Date();}
-function fyOfDate(d){var m=d.getMonth();return m>=3?d.getFullYear():d.getFullYear()-1;} // FY start year
+function fyOfDate(d){var m=d.getMonth();return m>=3?d.getFullYear():d.getFullYear()-1;}
 function curFY(){return fyOfDate(today());}
-function fyMonthIndex(d){var m=d.getMonth();return m>=3?m-3:m+9;} // 0..11 within FY
+function fyMonthIndex(d){var m=d.getMonth();return m>=3?m-3:m+9;}
 function curMonthIdx(){return fyMonthIndex(today());}
-function fyLabel(startYr){return 'FY'+String(startYr).slice(2)+'-'+String(startYr+1).slice(2);}
-function mdKey(fyStart,mi){return fyStart+'_'+mi;}
-
-/* ---- id helper ---- */
+function fyLabel(y){return 'FY'+String(y).slice(2)+'-'+String(y+1).slice(2);}
+function mdKey(fy,mi){return fy+'_'+mi;}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
 
-/* ============ SAMPLE DATA (₹50k regular person) ============ */
+/* ============ DATA ============ */
+function defaultSetup(){return [
+ {id:uid(),lbl:'Emergency fund: 3 to 6 months of expenses in cash',sub:'Keep it in your Cash line. Do this first.'},
+ {id:uid(),lbl:'SIPs on auto-debit',sub:'So you invest before you can spend it'},
+ {id:uid(),lbl:'PPF / EPF nominations done',sub:'Tell your bank and employer who inherits it'},
+ {id:uid(),lbl:'Term + health insurance, if people depend on you',sub:'Protection, not investment'},
+ {id:uid(),lbl:'File your ITR before the deadline',sub:'Usually 31 July'}
+];}
 function sampleData(){
-  income=[
-    {id:uid(),name:'Salary',amount:50000,cadence:'monthly',grows:true,growthRate:null,taxable:true,salary:true},
-    {id:uid(),name:'Variable pay',amount:30000,cadence:'quarterly',grows:false,growthRate:null,taxable:true}
-  ];
+  income=[{id:uid(),name:'Salary (take-home)',monthly:50000}];
   invests=[
-    {id:uid(),name:'Index / Large cap SIP',monthly:4000,ret:0.11,openVal:90000,openInv:80000,market:true,cap:0,ic:'📈'},
-    {id:uid(),name:'Mid / Flexi cap SIP',monthly:3000,ret:0.13,openVal:0,openInv:0,market:true,cap:0,ic:'📊'},
-    {id:uid(),name:'PPF',monthly:2000,ret:0.071,openVal:120000,openInv:110000,market:false,cap:150000,ic:'🏦'},
-    {id:uid(),name:'EPF',monthly:1800,ret:0.0825,openVal:60000,openInv:60000,market:false,cap:0,ic:'💼'},
-    {id:uid(),name:'Gold (SGB/digital)',monthly:1500,ret:0.08,openVal:40000,openInv:38000,market:true,cap:0,ic:'🪙'},
-    {id:uid(),name:'Cash / savings',monthly:0,ret:0.03,openVal:150000,openInv:150000,market:false,cap:0,ic:'💰'}
+    {id:uid(),name:'Index / Large cap SIP',monthly:4000,ret:0.11,openVal:90000,market:true,ic:'📈'},
+    {id:uid(),name:'Mid / Flexi cap SIP',monthly:3000,ret:0.13,openVal:0,market:true,ic:'📊'},
+    {id:uid(),name:'PPF',monthly:2000,ret:0.071,openVal:120000,market:false,ic:'🏦'},
+    {id:uid(),name:'EPF',monthly:1800,ret:0.0825,openVal:60000,market:false,ic:'💼'},
+    {id:uid(),name:'Gold (SGB / digital)',monthly:1500,ret:0.08,openVal:40000,market:true,ic:'🪙'},
+    {id:uid(),name:'Cash / savings',monthly:0,ret:0.03,openVal:150000,market:false,cash:true,ic:'💰'}
   ];
-  expenses=[
-    {id:uid(),name:'Living (rent, food, transport)',monthly:22000,grows:true,growthRate:null},
-    {id:uid(),name:'Discretionary / card',monthly:6000,grows:true,growthRate:null}
-  ];
-  liabs=[];
-  events=[];
-  pastSnaps={};
-  bills=[
-    {id:uid(),name:'Credit card',amount:6000,day:5,remindDays:2},
-    {id:uid(),name:'Rent',amount:15000,day:1,remindDays:1}
-  ];
+  expenses=[{id:uid(),name:'Living (rent, food, transport)',monthly:22000},{id:uid(),name:'Discretionary / card',monthly:6000}];
+  liabs=[]; bills=[{id:uid(),name:'Credit card',amount:6000,day:5,remindDays:2},{id:uid(),name:'Rent',amount:15000,day:1,remindDays:1}];
+  setupTasks=defaultSetup();
 }
 function emptyData(){
-  income=[{id:uid(),name:'Salary',amount:0,cadence:'monthly',grows:true,growthRate:null,taxable:true,salary:true}];
-  invests=[{id:uid(),name:'Cash / savings',monthly:0,ret:0.03,openVal:0,openInv:0,market:false,cap:0,ic:'💰'}];
-  expenses=[{id:uid(),name:'Living',monthly:0,grows:true,growthRate:null}];
-  liabs=[];events=[];pastSnaps={};bills=[];
+  income=[{id:uid(),name:'Salary (take-home)',monthly:0}];
+  invests=[{id:uid(),name:'Cash / savings',monthly:0,ret:0.03,openVal:0,market:false,cash:true,ic:'💰'}];
+  expenses=[{id:uid(),name:'Living',monthly:0}];
+  liabs=[]; bills=[]; setupTasks=defaultSetup();
 }
 
 /* ============ PERSIST ============ */
-var LS='sprout_v2';
-function save(){
-  try{
-    localStorage.setItem(LS,JSON.stringify({
-      S:S,income:income,invests:invests,expenses:expenses,liabs:liabs,events:events,
-      pastSnaps:pastSnaps,monthData:monthData,checkState:checkState,customTasks:customTasks,bills:bills
-    }));
-  }catch(e){ if(e&&e.name==='QuotaExceededError') toast('Storage full. Back up and trim old data.'); }
+var LS='sprout_v3';
+function stateObj(){return {S:S,income:income,invests:invests,expenses:expenses,liabs:liabs,monthData:monthData,setupTasks:setupTasks,checkState:checkState,customTasks:customTasks,bills:bills};}
+function applyBlob(d){ if(!d)return;
+  if(d.S){for(var k in S){if(d.S[k]!==undefined)S[k]=d.S[k];}}
+  income=d.income||[];invests=d.invests||[];expenses=d.expenses||[];liabs=d.liabs||[];
+  monthData=d.monthData||{};setupTasks=d.setupTasks||[];checkState=d.checkState||{};customTasks=d.customTasks||[];bills=d.bills||[];
+  if(!setupTasks.length)setupTasks=defaultSetup();
 }
-function load(){
-  try{
-    var raw=localStorage.getItem(LS);
-    if(!raw){return false;}
-    var d=JSON.parse(raw);
-    if(d.S){for(var k in S){if(d.S[k]!==undefined)S[k]=d.S[k];}}
-    income=d.income||[];invests=d.invests||[];expenses=d.expenses||[];
-    liabs=d.liabs||[];events=d.events||[];pastSnaps=d.pastSnaps||{};
-    monthData=d.monthData||{};checkState=d.checkState||{};customTasks=d.customTasks||[];bills=d.bills||[];
-    return true;
-  }catch(e){ console.warn('load failed',e); return false; }
-}
+function save(){ try{ localStorage.setItem(LS,JSON.stringify(stateObj())); }catch(e){ if(e&&e.name==='QuotaExceededError')toast('Storage full. Back up and trim old data.'); } }
+function load(){ try{ var raw=localStorage.getItem(LS); if(!raw)return false; applyBlob(JSON.parse(raw)); return true; }catch(e){ console.warn(e); return false; } }
 
 /* ============ FORMAT ============ */
 function n(v){var x=parseFloat(String(v).replace(/[₹,\s]/g,''));return isNaN(x)?0:x;}
@@ -438,24 +419,22 @@ function fi(v){var r=Math.round(+v||0),a=Math.abs(r);
 function fc(v){var r=Math.round(+v||0);return (r<0?'-₹':'₹')+Math.abs(r).toLocaleString('en-IN');}
 function fp(v){return ((+v||0)*100).toFixed(0)+'%';}
 function fp1(v){return ((+v||0)*100).toFixed(1)+'%';}
-
-/* ============ TOAST ============ */
-function toast(msg){var t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(function(){t.classList.remove('show');},2400);}
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+function toast(m){var t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(function(){t.classList.remove('show');},2400);}
 
 /* ============ NAV ============ */
 var MAIN=['home','track','wealth','checks','more'];
 function nav(name){
-  var pages=document.querySelectorAll('.pg');for(var i=0;i<pages.length;i++)pages[i].classList.remove('on');
+  var p=document.querySelectorAll('.pg');for(var i=0;i<p.length;i++)p[i].classList.remove('on');
   document.getElementById('pg-'+name).classList.add('on');
-  var navis=document.querySelectorAll('.ni');for(var j=0;j<navis.length;j++)navis[j].classList.remove('on');
-  var tab=MAIN.indexOf(name)>=0?name:'more';
-  var nb=document.getElementById('n-'+tab); if(nb)nb.classList.add('on');
+  var ni=document.querySelectorAll('.ni');for(var j=0;j<ni.length;j++)ni[j].classList.remove('on');
+  var tab=MAIN.indexOf(name)>=0?name:'more';var nb=document.getElementById('n-'+tab);if(nb)nb.classList.add('on');
   document.getElementById('scr').scrollTop=0;
-  var r=RENDER[name]; if(r)r();
+  var r=RENDER[name];if(r)r();
 }
-var RENDER={}; // render functions registered in later steps
+var RENDER={};
 
-/* ============ ONBOARDING ============ */
+/* ============ ONBOARDING / IDENTITY ============ */
 function finishOnboard(withSample){
   S.name=(document.getElementById('ob-name').value||'').trim();
   if(withSample)sampleData(); else emptyData();
@@ -472,61 +451,60 @@ function applyIdentity(){
   var h=today().getHours();
   document.getElementById('hdr-greet').textContent=h<12?'Good morning,':h<17?'Good afternoon,':'Good evening,';
 }
-
-/* ============ BOOT ============ */
-function boot(){
-  // renders are wired up in later build steps; safe-guard each call
-  Object.keys(RENDER).forEach(function(k){});
-  if(RENDER.home)RENDER.home();
-  if(typeof updBadge==='function')updBadge();
-}
+function boot(){ if(RENDER.home)RENDER.home(); updBadge(); }
 
 /* ============ ENGINE ============ */
-function findSalary(){for(var i=0;i<income.length;i++)if(income[i].salary)return income[i];return income[0]||null;}
-function monthlyOf(it){var a=n(it.amount);var c=it.cadence;if(c==='quarterly')return a/3;if(c==='yearly')return a/12;if(c==='oneoff'||c==='irregular')return 0;return a;}
+function cashLine(){for(var i=0;i<invests.length;i++)if(invests[i].cash)return invests[i];return null;}
+function nonCash(){return invests.filter(function(v){return !v.cash;});}
 function scenMult(sc){var s=sc||curScen;return s==='bear'?S.bearMult:s==='bull'?S.bullMult:S.baseMult;}
 function effRet(inv,sc){return inv.market?n(inv.ret)*scenMult(sc):n(inv.ret);}
-
-function salaryMonthlyY(y){var sal=findSalary();if(!sal)return 0;var base=monthlyOf(sal);
-  for(var k=2;k<=y;k++){var ov=S.overrides[k];if(ov){if(ov.type==='abs')base=n(ov.value);else base=base*(1+n(ov.value)/100);}else base=base*(1+n(S.increment));}
-  return base;}
-function incomeMonthlyY(y){var t=0;for(var i=0;i<income.length;i++){var it=income[i];
-  if(it.salary){t+=salaryMonthlyY(y);continue;}
-  var m=monthlyOf(it);if(it.grows){var g=it.growthRate!=null?n(it.growthRate):n(S.increment);m=m*Math.pow(1+g,y-1);}t+=m;}
-  return t;}
-function expenseMonthlyY(y){var t=0;for(var i=0;i<expenses.length;i++){var e=expenses[i];var m=n(e.monthly);
-  if(e.grows){var g=e.growthRate!=null?n(e.growthRate):n(S.inflation);m=m*Math.pow(1+g,y-1);}t+=m;}return t;}
-function emiActiveY(l,y){var paid=n(l.emi)*12*y;return n(l.outstanding)>paid;}
-function emiMonthlyY(y){var t=0;for(var i=0;i<liabs.length;i++){if(emiActiveY(liabs[i],y))t+=n(liabs[i].emi);}return t;}
-function contribAnnualK(inv,k){var m=n(inv.monthly)*Math.pow(1+n(S.sipStep),k-1);var ann=m*12;if(n(inv.cap)>0)ann=Math.min(ann,n(inv.cap));return ann;}
-function eventsForInvest(invId,y,sc){var t=0;for(var i=0;i<events.length;i++){var ev=events[i];if(ev.target!==invId)continue;var ey=n(ev.year);if(ey>y)continue;var amt=n(ev.amount)*(ev.dir==='out'?-1:1);var inv=invests.find(function(x){return x.id===invId;});var r=inv?effRet(inv,sc):0;t+=amt*Math.pow(1+r,y-ey+0.5);}return t;}
-function projInvest(inv,y,sc){var r=effRet(inv,sc);var fv=n(inv.openVal)*Math.pow(1+r,y);
-  for(var k=1;k<=y;k++){fv+=contribAnnualK(inv,k)*Math.pow(1+r,y-k+0.5);}
-  fv+=eventsForInvest(inv.id,y,sc);return Math.max(fv,0);}
-function contribTotalK(k){var t=0;for(var i=0;i<invests.length;i++)t+=contribAnnualK(invests[i],k);return t;}
-function cashSurplus(y,sc){var c=0;for(var k=1;k<=y;k++){var s=(incomeMonthlyY(k)-expenseMonthlyY(k)-emiMonthlyY(k))*12-contribTotalK(k);
-  c+=s*Math.pow(1.03,y-k+0.5);}
-  for(var i=0;i<events.length;i++){var ev=events[i];if(ev.target!=='cash')continue;var ey=n(ev.year);if(ey>y)continue;var amt=n(ev.amount)*(ev.dir==='out'?-1:1);c+=amt*Math.pow(1.03,y-ey+0.5);}
-  return c;}
-function liabOutstandingY(y){var t=0;for(var i=0;i<liabs.length;i++){t+=Math.max(0,n(liabs[i].outstanding)-n(liabs[i].emi)*12*y);}return t;}
-function liabOutstandingNow(){var t=0;for(var i=0;i<liabs.length;i++)t+=n(liabs[i].outstanding);return t;}
-function assetsY(y,sc){var t=cashSurplus(y,sc);for(var i=0;i<invests.length;i++)t+=projInvest(invests[i],y,sc);return t;}
+function incomeMonthly(){var t=0;income.forEach(function(it){t+=n(it.monthly);});return t;}
+function expenseMonthly(){var t=0;expenses.forEach(function(e){t+=n(e.monthly);});return t;}
+function emiMonthly(){var t=0;liabs.forEach(function(l){if(n(l.outstanding)>0)t+=n(l.emi);});return t;}
+function investContribMonthly(){var t=0;nonCash().forEach(function(v){t+=n(v.monthly);});return t;}
+function bufferMonthly(){return incomeMonthly()-expenseMonthly()-emiMonthly()-investContribMonthly();}
+function fvContrib(monthly,r,y){var s=0;for(var k=1;k<=y;k++)s+=monthly*12*Math.pow(1+r,y-k+0.5);return s;}
+function projInvest(inv,y,sc){
+  if(inv.cash){var rc=n(inv.ret);return Math.max(0,n(inv.openVal)*Math.pow(1+rc,y)+fvContrib(bufferMonthly(),rc,y));}
+  var r=effRet(inv,sc);return Math.max(0,n(inv.openVal)*Math.pow(1+r,y)+fvContrib(n(inv.monthly),r,y));
+}
+function liabOutstandingY(y){var t=0;liabs.forEach(function(l){t+=Math.max(0,n(l.outstanding)-n(l.emi)*12*y);});return t;}
+function liabOutstandingNow(){var t=0;liabs.forEach(function(l){t+=n(l.outstanding);});return t;}
+function assetsY(y,sc){var t=0;invests.forEach(function(v){t+=projInvest(v,y,sc);});return t;}
 function netWorthY(y,sc){return assetsY(y,sc)-liabOutstandingY(y);}
 function realFactor(y){return rnMode==='real'?1/Math.pow(1+n(S.inflation),y):1;}
-function corpusNow(){var t=0;for(var i=0;i<invests.length;i++)t+=n(invests[i].openVal);return t;}
+function corpusNow(){var t=0;invests.forEach(function(v){t+=n(v.openVal);});return t;}
 function netWorthNow(){return corpusNow()-liabOutstandingNow();}
-function investMonthlyNow(){var t=0;for(var i=0;i<invests.length;i++)t+=n(invests[i].monthly);return t;}
-function freeBufferNow(){return incomeMonthlyY(1)-expenseMonthlyY(1)-emiMonthlyY(1)-investMonthlyNow();}
 
-/* ============ MONTH DATA (Track) ============ */
-function getM(key){
-  if(!monthData[key]){monthData[key]={inc:{},inv:{},exp:{},notes:'',_saved:false};}
-  return monthData[key];
-}
-function mActualInc(md){var t=0;income.forEach(function(it){t+=(md.inc[it.id]!=null?n(md.inc[it.id]):monthlyOf(it));});return t;}
-function mActualInv(md){var t=0;invests.forEach(function(it){t+=(md.inv[it.id]!=null?n(md.inv[it.id]):n(it.monthly));});return t;}
+/* ============ MONTH DATA + APPLY TO CORPUS ============ */
+function getM(key){ if(!monthData[key])monthData[key]={inc:{},inv:{},exp:{},shocks:[],notes:'',_saved:false,_applied:null};
+  var m=monthData[key];if(!m.shocks)m.shocks=[];if(!m.inc)m.inc={};if(!m.inv)m.inv={};if(!m.exp)m.exp={};return m; }
+function mActualInc(md){var t=0;income.forEach(function(it){t+=(md.inc[it.id]!=null?n(md.inc[it.id]):n(it.monthly));});return t;}
+function mActualInv(md){var t=0;nonCash().forEach(function(it){t+=(md.inv[it.id]!=null?n(md.inv[it.id]):n(it.monthly));});return t;}
 function mActualExp(md){var t=0;expenses.forEach(function(it){t+=(md.exp[it.id]!=null?n(md.exp[it.id]):n(it.monthly));});return t;}
-function mLeft(md){return mActualInc(md)-mActualInv(md)-mActualExp(md);}
+function mShockIncome(md){var t=0;md.shocks.forEach(function(s){if(s.source==='income')t+=n(s.amount);});return t;}
+function mShockCash(md){var t=0;md.shocks.forEach(function(s){if(s.source==='cash')t+=n(s.amount);});return t;}
+function mShockLoan(md){var t=0;md.shocks.forEach(function(s){if(s.source==='loan')t+=n(s.amount);});return t;}
+function mSpent(md){return mActualExp(md)+mShockIncome(md);}
+function mLeft(md){return mActualInc(md)-mActualInv(md)-mSpent(md);} // buffer that flows to cash
+function findBorrow(){for(var i=0;i<liabs.length;i++)if(liabs[i].borrow)return liabs[i];return null;}
+function ensureBorrow(){var l=findBorrow();if(!l){l={id:uid(),name:'Borrowed / shock loans',outstanding:0,emi:0,borrow:true};liabs.push(l);}return l;}
+function revertMonth(md){
+  if(!md._applied)return;var a=md._applied,cash=cashLine();
+  nonCash().forEach(function(v){if(a.inv[v.id]!=null)v.openVal=n(v.openVal)-a.inv[v.id];});
+  if(cash)cash.openVal=n(cash.openVal)-a.cashBuf+a.cashShock;
+  if(a.loanShock>0){var l=findBorrow();if(l)l.outstanding=Math.max(0,n(l.outstanding)-a.loanShock);}
+  md._applied=null;
+}
+function applyMonth(md){
+  var cash=cashLine(),snap={};
+  nonCash().forEach(function(v){var amt=md.inv[v.id]!=null?n(md.inv[v.id]):n(v.monthly);v.openVal=n(v.openVal)+amt;snap[v.id]=amt;});
+  var buf=mLeft(md); if(cash)cash.openVal=n(cash.openVal)+buf;
+  var cashShock=mShockCash(md),loanShock=mShockLoan(md);
+  if(cash)cash.openVal=n(cash.openVal)-cashShock;
+  if(loanShock>0)ensureBorrow().outstanding=n(ensureBorrow().outstanding)+loanShock;
+  md._applied={inv:snap,cashBuf:buf,cashShock:cashShock,loanShock:loanShock};
+}
 
 /* ============ HOME ============ */
 RENDER.home=function(){
@@ -534,94 +512,103 @@ RENDER.home=function(){
   applyIdentity();
   document.getElementById('h-nw').textContent=fi(netWorthNow());
   document.getElementById('h-nw-sub').textContent=liabOutstandingNow()>0?'after '+fi(liabOutstandingNow())+' loans':'assets only';
-  var buf=freeBufferNow();
-  var be=document.getElementById('h-buf');be.textContent=fi(buf);be.style.color=buf>=0?'#4ADE80':'#FF6B6B';
-  // bills strip
+  var buf=bufferMonthly();var be=document.getElementById('h-buf');be.textContent=fi(buf);be.style.color=buf>=0?'#4ADE80':'#FF6B6B';
   document.getElementById('h-bills').innerHTML=billStrip();
-  // this month
-  var key=mdKey(curFY(),curMonthIdx());var md=getM(key);
+  var md=getM(mdKey(curFY(),curMonthIdx()));
   document.getElementById('h-msum').innerHTML=
     '<div class="mb mb-inv"><div class="ml">Invested</div><div class="mv">'+fi(mActualInv(md))+'</div><div class="ms">'+MS[curMonthIdx()]+'</div></div>'
-   +'<div class="mb mb-sp"><div class="ml">Spent</div><div class="mv">'+fi(mActualExp(md))+'</div></div>'
-   +'<div class="mb mb-lf"><div class="ml">Left</div><div class="mv" style="color:'+(mLeft(md)>=0?'var(--indigo)':'var(--coral)')+'">'+fi(mLeft(md))+'</div></div>';
-  // stats
-  var sr=incomeMonthlyY(1)>0?investMonthlyNow()/incomeMonthlyY(1):0;
+   +'<div class="mb mb-sp"><div class="ml">Spent</div><div class="mv">'+fi(mSpent(md))+'</div></div>'
+   +'<div class="mb mb-lf"><div class="ml">To savings</div><div class="mv" style="color:'+(mLeft(md)>=0?'var(--indigo)':'var(--coral)')+'">'+fi(mLeft(md))+'</div></div>';
+  var sr=incomeMonthly()>0?investContribMonthly()/incomeMonthly():0;
   document.getElementById('h-stats').innerHTML=
-    '<div class="sbox"><div class="sl">Net worth in 5 yrs</div><div class="sv" style="color:var(--teal)">'+fi(netWorthY(5,'base'))+'</div><div class="ss">base case</div></div>'
+    '<div class="sbox"><div class="sl">Net worth in 5 yrs</div><div class="sv" style="color:var(--teal)">'+fi(netWorthY(5,'base'))+'</div><div class="ss">normal market</div></div>'
    +'<div class="sbox"><div class="sl">Savings rate</div><div class="sv" style="color:var(--indigo)">'+fp(sr)+'</div><div class="ss">of income invested</div></div>';
-  // ring: invest vs spend vs buffer
-  var inv=investMonthlyNow(),ex=expenseMonthlyY(1)+emiMonthlyY(1),bf=Math.max(buf,0),tot=inv+ex+bf;
+  var inv=investContribMonthly(),ex=expenseMonthly()+emiMonthly(),bf=Math.max(buf,0),tot=inv+ex+bf;
   var ctx=document.getElementById('h-ring');if(ringCh){ringCh.destroy();ringCh=null;}
-  if(window.Chart&&tot>0){ringCh=new Chart(ctx,{type:'doughnut',data:{datasets:[{data:[inv,ex,bf],backgroundColor:['#0ABFA3','#FF6B6B','#4361EE'],borderWidth:3,borderColor:'#fff'}]},options:{responsive:false,cutout:'70%',plugins:{legend:{display:false},tooltip:{enabled:false}},animation:{duration:600}}});}
+  if(window.Chart&&tot>0)ringCh=new Chart(ctx,{type:'doughnut',data:{datasets:[{data:[inv,ex,bf],backgroundColor:['#0ABFA3','#FF6B6B','#4361EE'],borderWidth:3,borderColor:'#fff'}]},options:{responsive:false,cutout:'70%',plugins:{legend:{display:false},tooltip:{enabled:false}},animation:{duration:600}}});
   document.getElementById('h-rpct').textContent=tot>0?fp(inv/tot):'—';
-  var lg=[['#0ABFA3','Invested',fc(inv)],['#FF6B6B','Spending',fc(ex)],['#4361EE','Free buffer',fi(bf)]];
-  var lh='';for(var i=0;i<lg.length;i++){lh+='<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)"><div style="width:9px;height:9px;border-radius:3px;background:'+lg[i][0]+';flex-shrink:0"></div><div style="flex:1;font-size:12px;font-weight:700;color:var(--muted)">'+lg[i][1]+'</div><div style="font-size:13px;font-weight:900">'+lg[i][2]+'</div></div>';}
+  var lg=[['#0ABFA3','Invested',fc(inv)],['#FF6B6B','Spending',fc(ex)],['#4361EE','To savings',fi(bf)]],lh='';
+  for(var i=0;i<lg.length;i++)lh+='<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)"><div style="width:9px;height:9px;border-radius:3px;background:'+lg[i][0]+'"></div><div style="flex:1;font-size:12px;font-weight:700;color:var(--muted)">'+lg[i][1]+'</div><div style="font-size:13px;font-weight:900">'+lg[i][2]+'</div></div>';
   document.getElementById('h-legend').innerHTML=lh;
  }catch(e){console.error('home',e);}
 };
 function billStrip(){
-  if(!bills.length)return '<div class="astrip as-info" style="cursor:pointer" onclick="nav(\'checks\')"><div class="as-ic">🔔</div><div><div class="as-t">Set up bill reminders</div><div class="as-d">Add your rent, card and SIP dates so you never miss one.</div></div></div>';
-  var t=today().getDate();var best=null,bestD=99;
-  for(var i=0;i<bills.length;i++){var d=((n(bills[i].day)-t+31)%31);if(d<bestD){bestD=d;best=bills[i];}}
+  if(!bills.length)return '<div class="astrip as-info" style="cursor:pointer" onclick="nav(\'checks\')"><div class="as-ic">🔔</div><div><div class="as-t">Set up bill reminders</div><div class="as-d">Add rent, card and SIP dates so you never miss one.</div></div></div>';
+  var t=today().getDate(),best=null,bd=99;
+  bills.forEach(function(b){var d=((n(b.day)-t+31)%31);if(d<bd){bd=d;best=b;}});
   if(!best)return '';
-  if(bestD<=3)return '<div style="background:linear-gradient(135deg,#FF6B6B,#FF8E53);border-radius:14px;padding:14px 16px;margin:0 14px;display:flex;gap:12px;align-items:center;cursor:pointer" onclick="nav(\'checks\')"><div style="font-size:24px">🔔</div><div style="flex:1"><div style="font-size:14px;font-weight:900;color:#fff">'+best.name+' due '+(bestD===0?'today!':'in '+bestD+'d')+'</div><div style="font-size:12px;color:rgba(255,255,255,.75);margin-top:2px">'+fc(best.amount)+' on the '+best.day+'</div></div><div style="color:#fff">→</div></div>';
-  return '<div class="astrip as-info" style="cursor:pointer" onclick="nav(\'checks\')"><div class="as-ic">🔔</div><div><div class="as-t">'+best.name+' · due the '+best.day+'</div><div class="as-d">'+bestD+' days away · '+fc(best.amount)+'</div></div></div>';
+  if(bd<=3)return '<div style="background:linear-gradient(135deg,#FF6B6B,#FF8E53);border-radius:14px;padding:14px 16px;margin:0 14px;display:flex;gap:12px;align-items:center;cursor:pointer" onclick="nav(\'checks\')"><div style="font-size:24px">🔔</div><div style="flex:1"><div style="font-size:14px;font-weight:900;color:#fff">'+esc(best.name)+' due '+(bd===0?'today!':'in '+bd+'d')+'</div><div style="font-size:12px;color:rgba(255,255,255,.75);margin-top:2px">'+fc(best.amount)+' on the '+best.day+'</div></div><div style="color:#fff">→</div></div>';
+  return '<div class="astrip as-info" style="cursor:pointer" onclick="nav(\'checks\')"><div class="as-ic">🔔</div><div><div class="as-t">'+esc(best.name)+' · due the '+best.day+'</div><div class="as-d">'+bd+' days away · '+fc(best.amount)+'</div></div></div>';
 }
 
 /* ============ TRACK ============ */
 RENDER.track=function(){
-  tMonth=curMonthIdx();
+  if(tMonth<0)tMonth=curMonthIdx();
   var chips='';for(var i=0;i<12;i++){var key=mdKey(curFY(),i);var sv=monthData[key]&&monthData[key]._saved;var fut=i>curMonthIdx();
     chips+='<div class="mc'+(i===tMonth?' on':'')+(sv&&i!==tMonth?' saved':'')+(fut?' future':'')+'" onclick="selM('+i+')">'+MS[i]+'</div>';}
   document.getElementById('t-chips').innerHTML=chips;
   setTimeout(function(){var el=document.querySelector('.mc.on');if(el)el.scrollIntoView({behavior:'smooth',block:'nearest',inline:'center'});},60);
-  renderTSum();renderTFields();
+  renderTSum();renderTFields();renderShocks();
   document.getElementById('t-notes').value=getM(mdKey(curFY(),tMonth)).notes||'';
   renderYTD();
 };
 function selM(i){tMonth=i;RENDER.track();}
-function setTTab(tab,btn){tTab=tab;var tabs=document.querySelectorAll('#t-tabs .tt');for(var i=0;i<tabs.length;i++)tabs[i].classList.remove('on');btn.classList.add('on');renderTFields();}
+function setTTab(tab,btn){tTab=tab;var t=document.querySelectorAll('#t-tabs .tt');for(var i=0;i<t.length;i++)t[i].classList.remove('on');btn.classList.add('on');renderTFields();}
 function renderTSum(){var md=getM(mdKey(curFY(),tMonth));
   document.getElementById('t-sum').innerHTML=
     '<div class="mb mb-inv"><div class="ml">Invested</div><div class="mv">'+fi(mActualInv(md))+'</div></div>'
-   +'<div class="mb mb-sp"><div class="ml">Spent</div><div class="mv">'+fi(mActualExp(md))+'</div></div>'
-   +'<div class="mb mb-lf"><div class="ml">Left</div><div class="mv" style="color:'+(mLeft(md)>=0?'var(--indigo)':'var(--coral)')+'">'+fi(mLeft(md))+'</div></div>';
+   +'<div class="mb mb-sp"><div class="ml">Spent</div><div class="mv">'+fi(mSpent(md))+'</div></div>'
+   +'<div class="mb mb-lf"><div class="ml">To savings</div><div class="mv" style="color:'+(mLeft(md)>=0?'var(--indigo)':'var(--coral)')+'">'+fi(mLeft(md))+'</div></div>';
 }
-function trackList(){return tTab==='income'?income:tTab==='invests'?invests:expenses;}
+function trackList(){return tTab==='income'?income:tTab==='invests'?nonCash():expenses;}
 function trackBucket(){return tTab==='income'?'inc':tTab==='invests'?'inv':'exp';}
-function expectedOf(it){return tTab==='income'?monthlyOf(it):tTab==='invests'?n(it.monthly):n(it.monthly);}
 function renderTFields(){
-  var md=getM(mdKey(curFY(),tMonth));var list=trackList();var bk=trackBucket();var isExp=tTab==='expenses';
-  var html='<div class="eva-hd"><div style="flex:1">Item</div><div style="width:74px;text-align:right">Plan</div><div style="width:90px;text-align:right">Actual</div><div style="width:22px"></div></div>';
-  for(var i=0;i<list.length;i++){var f=list[i];var exp=expectedOf(f);var val=md[bk][f.id]!=null?n(md[bk][f.id]):exp;
-    var over=isExp&&exp>0&&val>exp*1.05;var under=!isExp&&exp>0&&val<exp*0.95;
+  var md=getM(mdKey(curFY(),tMonth)),list=trackList(),bk=trackBucket(),isExp=tTab==='expenses';
+  var html='<div class="eva-hd"><div style="flex:1">Item</div><div style="width:74px;text-align:right">Usual</div><div style="width:90px;text-align:right">This month</div><div style="width:22px"></div></div>';
+  for(var i=0;i<list.length;i++){var f=list[i],exp=n(f.monthly),val=md[bk][f.id]!=null?n(md[bk][f.id]):exp;
+    var over=isExp&&exp>0&&val>exp*1.05,under=!isExp&&exp>0&&val<exp*0.95;
     html+='<div class="eva-row"><div class="eva-lbl"><div class="eva-lbl-t">'+(f.ic?f.ic+' ':'')+esc(f.name)+'</div></div>'
       +'<div class="eva-exp">'+(exp>0?fc(exp):'—')+'</div>'
       +'<input class="eva-inp'+(over?' over':under?' under':'')+'" type="number" inputmode="numeric" data-id="'+f.id+'" value="'+Math.round(val)+'" oninput="updF(this)">'
-      +'<div class="eva-x" onclick="rmLine(\''+f.id+'\')">×</div></div>';
-  }
-  html+='<div class="addrow"><input class="addinp" id="t-add" placeholder="Add a '+(tTab==='income'?'income':tTab==='invests'?'investment':'expense')+'…" maxlength="40"><button class="addbtn" onclick="addLine()">Add</button></div>';
+      +'<div class="eva-x" onclick="rmLine(\''+f.id+'\')">×</div></div>';}
+  html+='<div class="addrow"><input class="addinp" id="t-add" placeholder="Add '+(tTab==='income'?'income':tTab==='invests'?'an investment':'an expense')+'…" maxlength="40"><button class="addbtn" onclick="addLine()">Add</button></div>';
   document.getElementById('t-fields').innerHTML=html;
 }
-function updF(el){var md=getM(mdKey(curFY(),tMonth));md[trackBucket()][el.dataset.id]=n(el.value);renderTSum();}
+function updF(el){getM(mdKey(curFY(),tMonth))[trackBucket()][el.dataset.id]=n(el.value);renderTSum();}
 function addLine(){var v=(document.getElementById('t-add').value||'').trim();if(!v)return;
-  if(tTab==='income')income.push({id:uid(),name:v,amount:0,cadence:'monthly',grows:false,growthRate:null,taxable:true});
-  else if(tTab==='invests')invests.push({id:uid(),name:v,monthly:0,ret:0.10,openVal:0,openInv:0,market:true,cap:0,ic:'⭐'});
-  else expenses.push({id:uid(),name:v,monthly:0,grows:true,growthRate:null});
+  if(tTab==='income')income.push({id:uid(),name:v,monthly:0});
+  else if(tTab==='invests')invests.push({id:uid(),name:v,monthly:0,ret:0.10,openVal:0,market:true,ic:'⭐'});
+  else expenses.push({id:uid(),name:v,monthly:0});
   save();renderTFields();toast('Added "'+v+'"');}
 function rmLine(id){var list=trackList();if(list.length<=1){toast('Keep at least one line');return;}
-  if(!confirm('Remove this line? Logged history for it is cleared too.'))return;
-  var idx=list.findIndex(function(x){return x.id===id;});if(idx>=0)list.splice(idx,1);
-  for(var k in monthData){var b=trackBucket();if(monthData[k][b])delete monthData[k][b][id];}
-  save();renderTFields();renderTSum();renderYTD();toast('Removed');}
-function saveMonth(){var md=getM(mdKey(curFY(),tMonth));md.notes=document.getElementById('t-notes').value;md._saved=true;save();toast('✓ '+MN[tMonth]+' saved');RENDER.track();}
-function resetMonth(){if(!confirm('Reset '+MN[tMonth]+' back to the plan?'))return;delete monthData[mdKey(curFY(),tMonth)];RENDER.track();save();}
-function renderYTD(){var inc=0,inv=0,sp=0,nm=0;for(var i=0;i<12;i++){var md=monthData[mdKey(curFY(),i)];if(!md||!md._saved)continue;inc+=mActualInc(md);inv+=mActualInv(md);sp+=mActualExp(md);nm++;}
+  if(!confirm('Remove this line?'))return;var idx=list.findIndex(function(x){return x.id===id;});if(idx>=0)list.splice(idx,1);
+  save();renderTFields();renderTSum();toast('Removed');}
+var SRC=[['income',"From this month's money"],['cash','From my savings'],['loan','Borrowed / on loan']];
+function srcLabel(s){for(var i=0;i<SRC.length;i++)if(SRC[i][0]===s)return SRC[i][1];return s;}
+function renderShocks(){
+  var md=getM(mdKey(curFY(),tMonth)),h='<div class="card"><div class="clbl">💥 Unexpected one-off this month</div>';
+  if(!md.shocks.length)h+='<div class="set-sb" style="margin-bottom:6px">A surprise spend like a repair, gift or medical bill. Pick where the money came from.</div>';
+  md.shocks.forEach(function(s){h+='<div class="eva-row"><div class="eva-lbl"><div class="eva-lbl-t">'+esc(s.name)+'</div><div class="eva-lbl-s">'+srcLabel(s.source)+'</div></div><div class="eva-exp" style="color:var(--coral)">'+fc(s.amount)+'</div><div class="eva-x" onclick="rmShock(\''+s.id+'\')">×</div></div>';});
+  h+='<div class="addrow"><input class="addinp" id="sk-name" placeholder="What was it?" maxlength="34"><input class="addinp" id="sk-amt" type="number" inputmode="numeric" placeholder="₹" style="max-width:90px"></div>';
+  h+='<div class="addrow">'+sel(SRC,'income','setSkSrc(this)','sk-src')+'<button class="addbtn" style="flex:1" onclick="addShock()">Add one-off</button></div>';
+  h+='</div>';
+  document.getElementById('t-shocks').innerHTML=h;
+}
+var _skSrc='income';
+function setSkSrc(el){_skSrc=el.value;}
+function addShock(){var nm=(document.getElementById('sk-name').value||'').trim(),amt=n(document.getElementById('sk-amt').value);
+  if(!nm||amt<=0){toast('Add a name and amount');return;}
+  getM(mdKey(curFY(),tMonth)).shocks.push({id:uid(),name:nm,amount:amt,source:_skSrc});save();renderShocks();renderTSum();toast('Added. Tap Save month to lock it in.');}
+function rmShock(id){var md=getM(mdKey(curFY(),tMonth));md.shocks=md.shocks.filter(function(s){return s.id!==id;});save();renderShocks();renderTSum();}
+function saveMonth(){var md=getM(mdKey(curFY(),tMonth));md.notes=document.getElementById('t-notes').value;
+  revertMonth(md);applyMonth(md);md._saved=true;save();toast('✓ '+MN[tMonth]+' saved, wealth updated');RENDER.track();}
+function resetMonth(){if(!confirm('Reset '+MN[tMonth]+'? This undoes its effect on your wealth.'))return;
+  var md=getM(mdKey(curFY(),tMonth));revertMonth(md);delete monthData[mdKey(curFY(),tMonth)];save();RENDER.track();}
+function renderYTD(){var inc=0,inv=0,sp=0,nm=0;for(var i=0;i<12;i++){var md=monthData[mdKey(curFY(),i)];if(!md||!md._saved)continue;inc+=mActualInc(md);inv+=mActualInv(md);sp+=mSpent(md);nm++;}
   document.getElementById('t-ytd').innerHTML=
-    '<div class="sbox"><div class="sl">Invested</div><div class="sv" style="color:var(--teal)">'+fi(inv)+'</div><div class="ss">'+nm+' month'+(nm===1?'':'s')+' logged</div></div>'
+    '<div class="sbox"><div class="sl">Invested</div><div class="sv" style="color:var(--teal)">'+fi(inv)+'</div><div class="ss">'+nm+' month'+(nm===1?'':'s')+' saved</div></div>'
    +'<div class="sbox"><div class="sl">Income</div><div class="sv" style="color:var(--green)">'+fi(inc)+'</div><div class="ss">vs spent '+fi(sp)+'</div></div>';
 }
-function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 
 /* ============ WEALTH ============ */
 function setRN(m,btn){rnMode=m;var b=document.querySelectorAll('#w-rn button');b[0].classList.toggle('on',m==='nom');b[1].classList.toggle('on',m==='real');RENDER.wealth();}
@@ -629,180 +616,124 @@ function setWY(y){wYear=y;RENDER.wealth();}
 function setScen(sc){curScen=sc;RENDER.wealth();}
 RENDER.wealth=function(){
  try{
-  var nw5=netWorthY(5,curScen)*realFactor(5);
-  document.getElementById('w-tot').textContent=fi(nw5);
+  document.getElementById('w-tot').textContent=fi(netWorthY(5,curScen)*realFactor(5));
   document.getElementById('w-subline').textContent=(rnMode==='real'?"in today's money · ":'')+(liabOutstandingNow()>0?'assets minus loans':'total assets');
-  var base=netWorthNow();var cg=base>0?Math.pow(netWorthY(5,curScen)/base,0.2)-1:0;
+  var base=netWorthNow(),cg=base>0?Math.pow(netWorthY(5,curScen)/base,0.2)-1:0;
   document.getElementById('w-cagr').textContent=base>0?fp(cg):'—';
-  var dh='';for(var y=1;y<=5;y++){dh+='<div class="yd'+(y===wYear?' on':'')+'" onclick="setWY('+y+')"><div class="yd-dot"></div><div class="yd-lbl">Y'+y+'</div><div class="yd-amt">'+fi(netWorthY(y,curScen)*realFactor(y))+'</div></div>';}
+  var dh='';for(var y=1;y<=5;y++)dh+='<div class="yd'+(y===wYear?' on':'')+'" onclick="setWY('+y+')"><div class="yd-dot"></div><div class="yd-lbl">Y'+y+'</div><div class="yd-amt">'+fi(netWorthY(y,curScen)*realFactor(y))+'</div></div>';
   document.getElementById('w-dots').innerHTML=dh;
   document.getElementById('w-prog').style.width=(wYear/5*100)+'%';
   renderWYr();renderWBar();
-  var sc=[['bear','🐻','Market dips'],['base','📊','Stays normal'],['bull','🐂','Market soars']];
-  var sh='';for(var i=0;i<sc.length;i++){sh+='<div class="scen'+(curScen===sc[i][0]?' on':'')+'" onclick="setScen(\''+sc[i][0]+'\')"><div class="sc-ic">'+sc[i][1]+'</div><div class="sc-lb">'+sc[i][2]+'</div><div class="sc-val">'+fi(netWorthY(5,sc[i][0])*realFactor(5))+'</div></div>';}
+  var sc=[['bear','🐻','Market dips'],['base','📊','Stays normal'],['bull','🐂','Market soars']],sh='';
+  for(var i=0;i<sc.length;i++)sh+='<div class="scen'+(curScen===sc[i][0]?' on':'')+'" onclick="setScen(\''+sc[i][0]+'\')"><div class="sc-ic">'+sc[i][1]+'</div><div class="sc-lb">'+sc[i][2]+'</div><div class="sc-val">'+fi(netWorthY(5,sc[i][0])*realFactor(5))+'</div></div>';
   document.getElementById('w-scens').innerHTML=sh;
  }catch(e){console.error('wealth',e);}
 };
 function renderWYr(){
-  var rf=realFactor(wYear);var items=[];var tot=0;
-  for(var i=0;i<invests.length;i++){var v=projInvest(invests[i],wYear,curScen)*rf;items.push([invests[i].ic||'•',invests[i].name,v]);tot+=v;}
-  var cash=cashSurplus(wYear,curScen)*rf;if(Math.abs(cash)>1){items.push(['🔵','Spare cash built up',cash]);tot+=cash;}
-  var liab=liabOutstandingY(wYear)*rf;
-  var nw=tot-liab;
+  var rf=realFactor(wYear),items=[],tot=0;
+  invests.forEach(function(v){var val=projInvest(v,wYear,curScen)*rf;items.push([v.ic||'•',v.name,val]);tot+=val;});
+  var liab=liabOutstandingY(wYear)*rf,nw=tot-liab;
   var prev=wYear>1?netWorthY(wYear-1,curScen)*realFactor(wYear-1):netWorthNow();
   var pct=prev>0?Math.round((nw-prev)/prev*100):0;
   var cols=['#0ABFA3','#4361EE','#22C55E','#F5A623','#8B5CF6','#EC4899','#0891B2','#94A3B8'];
   var html='<div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:14px"><div><div style="font-size:26px;font-weight:900;color:var(--navy)">'+fi(nw)+'</div><div style="font-size:12px;color:var(--muted);font-weight:700;margin-top:2px">Net worth · Year '+wYear+'</div></div><div class="pill '+(pct>=0?'pill-g':'pill-r')+'">'+(pct>=0?'+':'')+pct+'%</div></div>';
-  for(var j=0;j<items.length;j++){var it=items[j];var bw=tot>0?Math.min(Math.abs(it[2])/tot*100*2,100):0;
-    html+='<div class="crow"><div class="crow-ic">'+it[0]+'</div><div class="crow-lbl">'+esc(it[1])+'</div><div class="crow-bar"><div class="crow-bar-f" style="width:'+bw+'%;background:'+cols[j%cols.length]+'"></div></div><div class="crow-val">'+fi(it[2])+'</div></div>';}
+  items.forEach(function(it,j){var bw=tot>0?Math.min(Math.abs(it[2])/tot*100*2,100):0;
+    html+='<div class="crow"><div class="crow-ic">'+it[0]+'</div><div class="crow-lbl">'+esc(it[1])+'</div><div class="crow-bar"><div class="crow-bar-f" style="width:'+bw+'%;background:'+cols[j%cols.length]+'"></div></div><div class="crow-val">'+fi(it[2])+'</div></div>';});
   if(liab>0)html+='<div class="crow"><div class="crow-ic">🏷️</div><div class="crow-lbl" style="color:var(--red)">Loans outstanding</div><div class="crow-bar"></div><div class="crow-val" style="color:var(--red)">-'+fi(liab)+'</div></div>';
   document.getElementById('w-yrcard').innerHTML=html;
 }
-function pastYearsSorted(){return Object.keys(pastSnaps).map(Number).sort(function(a,b){return a-b;});}
-function snapTotal(yr){var o=pastSnaps[yr]||{};var t=0;for(var k in o)t+=n(o[k]);return t;}
 function renderWBar(){
-  var labels=[],data=[],cols=[];
-  var past=pastYearsSorted();
-  for(var i=0;i<past.length;i++){labels.push(fyLabel(past[i]));data.push(Math.round(snapTotal(past[i])));cols.push('#CBD5E1');}
-  labels.push('Now');data.push(Math.round(netWorthNow()));cols.push('#0ABFA3');
+  var labels=['Now'],data=[Math.round(netWorthNow())],cols=['#0ABFA3'];
   for(var y=1;y<=5;y++){labels.push('Y'+y);data.push(Math.round(netWorthY(y,curScen)*realFactor(y)));cols.push('#4361EE');}
   var ctx=document.getElementById('w-bar');if(barCh){barCh.destroy();barCh=null;}
-  if(window.Chart)barCh=new Chart(ctx,{type:'bar',data:{labels:labels,datasets:[{data:data,backgroundColor:cols,borderRadius:6}]},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){return ' '+fc(c.raw);}}}},
-    scales:{x:{grid:{display:false},ticks:{font:{size:9}}},y:{ticks:{callback:function(v){return fi(v);},font:{size:9}},grid:{color:'#F1F5F9'}}}}});
-  document.getElementById('w-hist-note').textContent=past.length?'Grey = your real history. Teal = today. Blue = projected '+(curScen==='bear'?'(market dips)':curScen==='bull'?'(market soars)':'(normal market)')+'.':'Add past years in Settings to see your real history here.';
+  if(window.Chart)barCh=new Chart(ctx,{type:'bar',data:{labels:labels,datasets:[{data:data,backgroundColor:cols,borderRadius:6}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){return ' '+fc(c.raw);}}}},scales:{x:{grid:{display:false},ticks:{font:{size:9}}},y:{ticks:{callback:function(v){return fi(v);},font:{size:9}},grid:{color:'#F1F5F9'}}}}});
+  document.getElementById('w-hist-note').textContent='Teal = today. Blue = projected '+(curScen==='bear'?'if the market dips':curScen==='bull'?'if the market soars':'in a normal market')+'. Log your months in Track to grow "today".';
 }
 
 /* ============ CHECKS + REMINDERS ============ */
 RENDER.checks=function(){
-  // bills
   var bh='';
-  for(var i=0;i<bills.length;i++){var b=bills[i];
-    bh+='<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:14px;font-weight:800">'+esc(b.name)+'</div><div style="font-size:11px;color:var(--muted);font-weight:600;margin-top:2px">'+fc(b.amount)+' · the '+b.day+' of each month · remind '+b.remindDays+'d before</div></div><div class="eva-x" onclick="rmBill(\''+b.id+'\')">×</div></div>'
-      +'<div style="padding:10px 0 0"><button class="btn btn-out" onclick="downloadICS(\''+b.id+'\')">📅 Add to calendar</button></div></div>';
-  }
-  if(!bills.length)bh='<div class="muted-note">No bills yet. Add one below to get calendar and email reminders.</div>';
+  bills.forEach(function(b){bh+='<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:14px;font-weight:800">'+esc(b.name)+'</div><div style="font-size:11px;color:var(--muted);font-weight:600;margin-top:2px">'+fc(b.amount)+' · the '+b.day+' of each month · remind '+b.remindDays+'d before</div></div><div class="eva-x" onclick="rmBill(\''+b.id+'\')">×</div></div><div style="padding:10px 0 0"><button class="btn btn-out" onclick="downloadICS(\''+b.id+'\')">📅 Add to calendar</button></div></div>';});
+  if(!bills.length)bh='<div class="muted-note">No bills yet. Add one below for calendar reminders.</div>';
   document.getElementById('c-bills').innerHTML=bh;
   document.getElementById('c-billform').innerHTML=
     '<div class="addrow"><input class="addinp" id="bf-name" placeholder="Bill name (e.g. Credit card)" maxlength="30"></div>'
-   +'<div class="addrow"><input class="addinp" id="bf-amt" type="number" inputmode="numeric" placeholder="Amount ₹"><input class="addinp" id="bf-day" type="number" inputmode="numeric" placeholder="Day (1-31)"><input class="addinp" id="bf-rem" type="number" inputmode="numeric" placeholder="Remind days before" value="2"></div>'
+   +'<div class="addrow"><input class="addinp" id="bf-amt" type="number" inputmode="numeric" placeholder="Amount ₹"><input class="addinp" id="bf-day" type="number" inputmode="numeric" placeholder="Day 1-31"><input class="addinp" id="bf-rem" type="number" inputmode="numeric" placeholder="Days before" value="2"></div>'
    +'<div class="addrow"><button class="addbtn" style="flex:1" onclick="addBill()">Add bill</button></div>';
-  // monthly checklist
-  var mk=mdKey(curFY(),curMonthIdx());
-  var items=[];
-  bills.forEach(function(b){items.push({id:'bill_'+b.id,lbl:'Pay '+b.name,sub:fc(b.amount)+' by the '+b.day,urgent:true});});
-  items.push({id:'logmonth',lbl:'Log this month in Track',sub:'Keep Sprout up to date',badge:'📒'});
+  var mk=mdKey(curFY(),curMonthIdx()),items=[];
+  bills.forEach(function(b){items.push({id:'bill_'+b.id,lbl:'Pay '+b.name,sub:fc(b.amount)+' by the '+b.day});});
+  items.push({id:'logmonth',lbl:'Log this month in Track',sub:'Keep Sprout up to date'});
   customTasks.forEach(function(t){items.push({id:'ct_'+t.id,lbl:t.lbl,sub:'Your task',custom:true,cid:t.id});});
-  var done=0;var mh='';
-  for(var i=0;i<items.length;i++){var c=items[i];var key=mk+'_'+c.id;var dn=checkState[key];if(dn)done++;
-    mh+='<div class="chi'+(dn?' done':'')+'" onclick="togChk(\''+key+'\')"><div class="chbox">'+(dn?'✓':'')+'</div><div class="ch-body"><div class="ch-t">'+esc(c.lbl)+'</div><div class="ch-s">'+esc(c.sub)+'</div></div>'+(c.custom?'<span class="eva-x" onclick="rmTask(\''+c.cid+'\',event)">×</span>':'')+'</div>';}
-  document.getElementById('c-monthly').innerHTML=mh||'<div class="muted-note">Nothing to tick yet.</div>';
+  var done=0,mh='';
+  items.forEach(function(c){var key=mk+'_'+c.id,dn=checkState[key];if(dn)done++;
+    mh+='<div class="chi'+(dn?' done':'')+'" onclick="togChk(\''+key+'\')"><div class="chbox">'+(dn?'✓':'')+'</div><div class="ch-body"><div class="ch-t">'+esc(c.lbl)+'</div><div class="ch-s">'+esc(c.sub)+'</div></div>'+(c.custom?'<span class="eva-x" onclick="rmTask(\''+c.cid+'\',event)">×</span>':'')+'</div>';});
+  document.getElementById('c-monthly').innerHTML=mh;
   document.getElementById('c-mprog').textContent=done+'/'+items.length;
-  // money setup (one-time)
-  var setup=[
-    {id:'su_emg',lbl:'Emergency fund: 3-6 months of expenses in cash',sub:'Keep it in your Cash line. Do this first.'},
-    {id:'su_sip',lbl:'SIPs on auto-debit',sub:'So you invest before you can spend it'},
-    {id:'su_ppf',lbl:'PPF / EPF nominations done',sub:'Tell your bank and employer who inherits it'},
-    {id:'su_term',lbl:'Term + health insurance (if people depend on you)',sub:'Protection, not investment'},
-    {id:'su_itr',lbl:'File your ITR before the deadline',sub:'Usually 31 July'}
-  ];
-  var sh='';for(var j=0;j<setup.length;j++){var g=setup[j];var dn2=checkState[g.id];
-    sh+='<div class="chi'+(dn2?' done':'')+'" onclick="togChk(\''+g.id+'\')"><div class="chbox">'+(dn2?'✓':'')+'</div><div class="ch-body"><div class="ch-t">'+g.lbl+'</div><div class="ch-s">'+g.sub+'</div></div></div>';}
+  var sh='';
+  setupTasks.forEach(function(g){var dn=checkState[g.id];
+    sh+='<div class="chi'+(dn?' done':'')+'" onclick="togChk(\''+g.id+'\')"><div class="chbox">'+(dn?'✓':'')+'</div><div class="ch-body"><div class="ch-t">'+esc(g.lbl)+'</div><div class="ch-s">'+esc(g.sub||'')+'</div></div><span class="eva-x" onclick="rmSetup(\''+g.id+'\',event)">×</span></div>';});
+  sh+='<div class="addrow"><input class="addinp" id="setup-inp" placeholder="Add a money goal…" maxlength="60"><button class="addbtn" onclick="addSetup()">Add</button></div>';
   document.getElementById('c-setup').innerHTML=sh;
   updBadge();
 };
 function togChk(k){checkState[k]=!checkState[k];save();RENDER.checks();}
-function addBill(){var nm=(document.getElementById('bf-name').value||'').trim();var amt=n(document.getElementById('bf-amt').value);var day=Math.max(1,Math.min(31,parseInt(document.getElementById('bf-day').value)||1));var rem=Math.max(0,parseInt(document.getElementById('bf-rem').value)||2);
+function addBill(){var nm=(document.getElementById('bf-name').value||'').trim(),amt=n(document.getElementById('bf-amt').value),day=Math.max(1,Math.min(31,parseInt(document.getElementById('bf-day').value)||1)),rem=Math.max(0,parseInt(document.getElementById('bf-rem').value)||2);
   if(!nm){toast('Name the bill');return;}bills.push({id:uid(),name:nm,amount:amt,day:day,remindDays:rem});save();RENDER.checks();toast('Bill added');}
 function rmBill(id){bills=bills.filter(function(b){return b.id!==id;});save();RENDER.checks();}
 function addTask(){var v=(document.getElementById('cust-inp').value||'').trim();if(!v)return;customTasks.push({id:uid(),lbl:v});document.getElementById('cust-inp').value='';save();RENDER.checks();toast('Task added');}
 function rmTask(id,e){e.stopPropagation();customTasks=customTasks.filter(function(t){return t.id!==id;});save();RENDER.checks();}
-function updBadge(){var mk=mdKey(curFY(),curMonthIdx());var t=today().getDate();var p=0;
+function addSetup(){var v=(document.getElementById('setup-inp').value||'').trim();if(!v)return;setupTasks.push({id:uid(),lbl:v,sub:'Your goal'});save();RENDER.checks();toast('Added');}
+function rmSetup(id,e){e.stopPropagation();setupTasks=setupTasks.filter(function(t){return t.id!==id;});if(checkState[id])delete checkState[id];save();RENDER.checks();}
+function updBadge(){var mk=mdKey(curFY(),curMonthIdx()),t=today().getDate(),p=0;
   bills.forEach(function(b){var d=((n(b.day)-t+31)%31);if(d<=n(b.remindDays)&&!checkState[mk+'_bill_'+b.id])p++;});
   var bd=document.getElementById('n-bdg');if(p>0){bd.textContent=p;bd.classList.add('show');}else bd.classList.remove('show');}
-
-/* ---- ICS calendar generation ---- */
 function pad(x){return x<10?'0'+x:''+x;}
-function icsFor(b){
-  var d=today();var dd=Math.min(n(b.day),28); // clamp to 28 so it exists every month
-  var dt=d.getFullYear()+pad(d.getMonth()+1)+pad(dd);
-  var uidS='sprout-'+b.id+'@sprout.local';
-  return ['BEGIN:VEVENT','UID:'+uidS,'DTSTART;VALUE=DATE:'+dt,'RRULE:FREQ=MONTHLY;BYMONTHDAY='+dd,
-    'SUMMARY:'+b.name+' due ('+fc(b.amount)+')','DESCRIPTION:Reminder from Sprout to pay '+b.name,
-    'BEGIN:VALARM','TRIGGER:-P'+n(b.remindDays)+'D','ACTION:DISPLAY','DESCRIPTION:'+b.name+' due soon','END:VALARM','END:VEVENT'].join('\r\n');
-}
-function downloadICS(id){
-  var list=id?bills.filter(function(b){return b.id===id;}):bills;
-  if(!list.length){toast('No bills to add');return;}
-  var ics=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Sprout//EN','CALSCALE:GREGORIAN'];
-  list.forEach(function(b){ics.push(icsFor(b));});ics.push('END:VCALENDAR');
-  var blob=new Blob([ics.join('\r\n')],{type:'text/calendar'});var url=URL.createObjectURL(blob);
-  var a=document.createElement('a');a.href=url;a.download=(id?list[0].name.replace(/\s+/g,'_'):'sprout_bills')+'.ics';document.body.appendChild(a);a.click();document.body.removeChild(a);
-  setTimeout(function(){URL.revokeObjectURL(url);},1000);
-  toast('Calendar file downloaded. Open it to add the reminder.');
-}
-/* ---- EmailJS on-demand send ---- */
-function loadEJS(cb){if(window.emailjs){cb();return;}var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js';s.onload=cb;s.onerror=function(){toast('Could not load email service (check internet)');};document.head.appendChild(s);}
-function emailBill(id){
-  if(!S.email){toast('Add your email in Settings first');return;}
-  if(!S.ejsKey||!S.ejsService||!S.ejsTemplate){toast('Add your free EmailJS keys in Settings to email yourself');nav('settings');return;}
-  var b=bills.filter(function(x){return x.id===id;})[0];if(!b)return;
-  var msg='Reminder: pay '+b.name+' ('+fc(b.amount)+') by the '+b.day+' of this month.';
-  loadEJS(function(){try{emailjs.init({publicKey:S.ejsKey});
-    emailjs.send(S.ejsService,S.ejsTemplate,{to_email:S.email,to_name:S.name||'there',message:msg,subject:'Sprout: '+b.name+' due'})
-      .then(function(){toast('✉️ Sent to '+S.email);},function(err){toast('Email failed: '+(err&&err.text?err.text:'check keys'));});
-  }catch(e){toast('Email error, check your keys');}});
-}
+function icsFor(b){var d=today(),dd=Math.min(n(b.day),28),dt=d.getFullYear()+pad(d.getMonth()+1)+pad(dd);
+  return ['BEGIN:VEVENT','UID:sprout-'+b.id+'@sprout.local','DTSTART;VALUE=DATE:'+dt,'RRULE:FREQ=MONTHLY;BYMONTHDAY='+dd,'SUMMARY:'+b.name+' due ('+fc(b.amount)+')','DESCRIPTION:Reminder from Sprout to pay '+b.name,'BEGIN:VALARM','TRIGGER:-P'+n(b.remindDays)+'D','ACTION:DISPLAY','DESCRIPTION:'+b.name+' due soon','END:VALARM','END:VEVENT'].join('\r\n');}
+function downloadICS(id){var list=id?bills.filter(function(b){return b.id===id;}):bills;if(!list.length){toast('No bills');return;}
+  var ics=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Sprout//EN','CALSCALE:GREGORIAN'];list.forEach(function(b){ics.push(icsFor(b));});ics.push('END:VCALENDAR');
+  var blob=new Blob([ics.join('\r\n')],{type:'text/calendar'}),url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download=(id?list[0].name.replace(/\s+/g,'_'):'sprout_bills')+'.ics';document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(function(){URL.revokeObjectURL(url);},1000);toast('Calendar file downloaded. Open it to add the reminder.');}
 
 /* ============ LEARN ============ */
 var LEARN=[
  ['🌱 Why start now?','The earlier you invest, the more time compounding has to work. ₹3,000 a month at 12% becomes about ₹7 lakh in 10 years, and most of that growth is in the later years. Time matters more than the amount.'],
- ['🛟 Emergency fund first','Before any risky investing, keep 3 to 6 months of expenses in plain cash or a savings account. It stops you from selling investments in a crisis. In Sprout this lives in your Cash line.'],
- ['💼 EPF','Money taken from your salary for retirement, with your employer adding a matching share. It earns around 8.25% a year, tax-advantaged. You enter the value yourself in Sprout because contributions vary.'],
- ['🏦 PPF','A government savings scheme, currently around 7.1%, fully tax-free, with a 15-year lock-in and a 1.5 lakh per year limit. Safe and steady, good for the low-risk slice of your money.'],
- ['📈 Mutual funds & SIP','A mutual fund pools money from many people and invests it. A SIP just means you put in a fixed amount every month automatically, so you buy more units when prices are low and fewer when high.'],
- ['🔵 Index vs active funds','Index funds quietly track the whole market at very low cost. Active funds pay a manager to pick stocks and hope to beat it. Most beginners do well with low-cost index funds.'],
- ['📊 Large cap vs mid/flexi','Large cap funds hold big stable companies, calmer but slower. Mid and flexi cap funds chase faster growth with bigger swings. A mix balances safety and growth.'],
- ['🪙 Gold','A hedge that often holds up when markets fall. Sovereign Gold Bonds and digital gold avoid storage hassle. Keep it a slice, not the whole plate, usually 5 to 15%.'],
- ['🥧 Asset allocation','Do not put everything in one place. Spread across equity (growth), fixed income like PPF and EPF (safety), gold (hedge) and cash (ready money). Rebalance once a year.'],
- ['⬆️ Step up every year','As your salary grows, raise your SIP too. A 10% step-up each year can hugely increase where you land in 5 years, without feeling it much month to month.'],
- ['🛡️ Insurance is not investment','Term life and health insurance protect you from disasters. Keep them separate from investing, and never buy investment-linked insurance for returns.'],
- ['🧮 The new tax regime','Now the default. Lower rates, almost no deductions. Income up to ₹12 lakh taxable pays zero tax thanks to the rebate. Use the Tax calculator here to estimate yours.'],
- ['⚠️ A word on the numbers','Every return here is an assumption, not a promise. Markets go up and down. Use the "market dips" scenario to see your worst case and plan for it.']
+ ['🛟 Emergency fund first','Before any risky investing, keep 3 to 6 months of expenses in plain cash. It stops you from selling investments in a crisis. In Sprout this lives in your Cash line.'],
+ ['💼 EPF','Money taken from your salary for retirement, with your employer adding a matching share. It earns around 8.25% a year, tax-advantaged.'],
+ ['🏦 PPF','A government savings scheme, currently around 7.1%, fully tax-free, with a 15-year lock-in and a 1.5 lakh per year limit. Safe and steady.'],
+ ['📈 Mutual funds & SIP','A mutual fund pools money from many people and invests it. A SIP just means you put in a fixed amount every month automatically.'],
+ ['🔵 Index vs active funds','Index funds quietly track the whole market at very low cost. Active funds pay a manager to pick stocks. Most beginners do well with low-cost index funds.'],
+ ['🪙 Gold','A hedge that often holds up when markets fall. Keep it a slice, not the whole plate, usually 5 to 15%.'],
+ ['🥧 Asset allocation','Spread across equity for growth, fixed income like PPF and EPF for safety, gold as a hedge, and cash for ready money. Rebalance once a year.'],
+ ['🛡️ Insurance is not investment','Term life and health insurance protect you from disasters. Keep them separate from investing.'],
+ ['🧮 The new tax regime','Now the default. Lower rates, almost no deductions. Income up to ₹12 lakh taxable pays zero tax thanks to the rebate.'],
+ ['⚠️ A word on the numbers','Every return here is an assumption, not a promise. Use the "market dips" scenario to see your worst case and plan for it.']
 ];
-RENDER.learn=function(){var h='';for(var i=0;i<LEARN.length;i++){h+='<div class="acc" onclick="this.classList.toggle(\'open\')"><div class="acc-h"><span>'+LEARN[i][0]+'</span><span class="acc-ar">▾</span></div><div class="acc-b">'+LEARN[i][1]+'</div></div>';}document.getElementById('learn-list').innerHTML=h;};
+RENDER.learn=function(){var h='';for(var i=0;i<LEARN.length;i++)h+='<div class="acc" onclick="this.classList.toggle(\'open\')"><div class="acc-h"><span>'+LEARN[i][0]+'</span><span class="acc-ar">▾</span></div><div class="acc-b">'+LEARN[i][1]+'</div></div>';document.getElementById('learn-list').innerHTML=h;};
 
 /* ============ TAX ============ */
-function taxNew(inc,sal){var ti=Math.max(0,inc-(sal?75000:0));
-  var sl=[[400000,0],[800000,.05],[1200000,.10],[1600000,.15],[2000000,.20],[2400000,.25],[1e15,.30]];
-  var tax=0,lo=0;for(var i=0;i<sl.length;i++){var up=sl[i][0],r=sl[i][1];if(ti>lo){tax+=(Math.min(ti,up)-lo)*r;lo=up;}else break;}
+function taxNew(inc,sal){var ti=Math.max(0,inc-(sal?75000:0)),sl=[[400000,0],[800000,.05],[1200000,.10],[1600000,.15],[2000000,.20],[2400000,.25],[1e15,.30]],tax=0,lo=0;
+  for(var i=0;i<sl.length;i++){var up=sl[i][0],r=sl[i][1];if(ti>lo){tax+=(Math.min(ti,up)-lo)*r;lo=up;}else break;}
   var reb=0;if(ti<=1200000){reb=Math.min(tax,60000);tax-=reb;}
   if(ti>1200000){var ex=ti-1200000;if(tax>ex)tax=ex;}
-  var sur=ti>20000000?tax*.25:ti>10000000?tax*.15:ti>5000000?tax*.10:0;
-  var cess=(tax+sur)*.04;return {ti:ti,tax:tax,reb:reb,sur:sur,cess:cess,total:tax+sur+cess};}
-function annualTaxable(){var t=0;income.forEach(function(it){if(it.taxable)t+=monthlyOf(it)*12;});return Math.round(t);}
+  var sur=ti>20000000?tax*.25:ti>10000000?tax*.15:ti>5000000?tax*.10:0,cess=(tax+sur)*.04;
+  return {ti:ti,tax:tax,reb:reb,sur:sur,cess:cess,total:tax+sur+cess};}
 RENDER.tax=function(){
   document.getElementById('tax-body').innerHTML=
-   '<div class="card"><div class="clbl">Your income</div>'
-   +'<div class="set-row"><div><div class="set-lb">Annual income (gross, ₹)</div><div class="set-sb">Before tax, for the year</div></div><input class="sinp" id="tax-inc" type="number" inputmode="numeric" value="'+(annualTaxable()||0)+'"></div>'
+   '<div class="card"><div class="clbl">Estimate your tax</div>'
+   +'<div class="set-row"><div><div class="set-lb">Annual income (gross, ₹)</div><div class="set-sb">Before tax, for the year</div></div><input class="sinp" id="tax-inc" type="number" inputmode="numeric" placeholder="e.g. 1200000"></div>'
    +'<div class="set-row"><div><div class="set-lb">I am salaried</div><div class="set-sb">Adds ₹75,000 standard deduction</div></div><input type="checkbox" id="tax-sal" checked style="width:22px;height:22px"></div>'
    +'<div class="bwrap" style="padding:12px 0 0"><button class="btn btn-indigo" onclick="calcTax()">Calculate tax</button></div></div>'
    +'<div id="tax-res"></div>'
-   +'<div class="warn-note">Estimate only, not tax advice. New regime, FY 2025-26 and 2026-27. Trading profits and capital gains are taxed separately at special rates and are not included here. EPF is cut from your in-hand but is still your savings.</div>';
-  calcTax();
-};
-function calcTax(){var inc=n(document.getElementById('tax-inc').value);var sal=document.getElementById('tax-sal').checked;var r=taxNew(inc,sal);
-  var net=inc-r.total;var mo=net/12;
+   +'<div class="warn-note">Estimate only, not tax advice. New regime, FY 2025-26 and 2026-27. Capital gains and trading profits are taxed separately and not included. This is a standalone tool; the income you track in Sprout is your take-home, so it stays separate from this.</div>';
+}
+function calcTax(){var inc=n(document.getElementById('tax-inc').value),sal=document.getElementById('tax-sal').checked,r=taxNew(inc,sal),net=inc-r.total;
   document.getElementById('tax-res').innerHTML='<div class="card">'
    +'<div style="text-align:center;padding:6px 0 12px"><div style="font-size:11px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.06em">Total tax for the year</div><div style="font-size:32px;font-weight:900;color:'+(r.total>0?'var(--coral)':'var(--green)')+';margin-top:4px">'+fc(r.total)+'</div><div style="font-size:12px;color:var(--muted);font-weight:600;margin-top:2px">'+(inc>0?fp1(r.total/inc)+' of your income':'')+'</div></div>'
-   +row('Taxable income',fc(r.ti))
-   +(r.reb>0?row('Rebate (87A)','-'+fc(r.reb)):'')
-   +(r.sur>0?row('Surcharge',fc(r.sur)):'')
-   +row('Cess (4%)',fc(r.cess))
-   +row('Take-home for year',fc(net))
-   +row('Roughly per month',fc(mo))
-   +'</div>'+(r.ti<=1200000?'<div class="astrip as-good"><div class="as-ic">🎉</div><div><div class="as-t">Zero tax</div><div class="as-d">Taxable income up to ₹12 lakh pays no tax in the new regime.</div></div></div>':'');}
-function row(l,v){return '<div class="set-row"><div class="set-lb" style="font-weight:600;font-size:13px;color:var(--muted)">'+l+'</div><div style="font-weight:800">'+v+'</div></div>';}
+   +trow('Taxable income',fc(r.ti))+(r.reb>0?trow('Rebate (87A)','-'+fc(r.reb)):'')+(r.sur>0?trow('Surcharge',fc(r.sur)):'')+trow('Cess (4%)',fc(r.cess))+trow('Take-home for year',fc(net))+trow('Roughly per month',fc(net/12))+'</div>'
+   +(r.ti<=1200000&&inc>0?'<div class="astrip as-good"><div class="as-ic">🎉</div><div><div class="as-t">Zero tax</div><div class="as-d">Taxable income up to ₹12 lakh pays no tax in the new regime.</div></div></div>':'');}
+function trow(l,v){return '<div class="set-row"><div class="set-lb" style="font-weight:600;font-size:13px;color:var(--muted)">'+l+'</div><div style="font-weight:800">'+v+'</div></div>';}
 
 /* ============ SETTINGS ============ */
 function setF(arr,id,key,val){var a=window[arr];for(var i=0;i<a.length;i++)if(a[i].id===id){a[i][key]=val;break;}save();}
@@ -813,106 +744,59 @@ function sB(arr,id,key,el){setF(arr,id,key,el.checked);}
 function sAssume(key,el,pct){S[key]=pct?n(el.value)/100:n(el.value);save();}
 function sIdent(key,el){S[key]=el.value.trim();save();applyIdentity();}
 function ck(v){return v?'checked':'';}
-function sel(opts,val,onch){var h='<select onchange="'+onch+'" style="padding:7px;border-radius:9px;border:2px solid var(--border);font-family:var(--f);font-weight:700;font-size:12px;background:var(--bg)">';opts.forEach(function(o){h+='<option value="'+o[0]+'"'+(o[0]==val?' selected':'')+'>'+o[1]+'</option>';});return h+'</select>';}
-
+function sel(opts,val,onch,id){var h='<select '+(id?'id="'+id+'" ':'')+'onchange="'+onch+'" style="padding:9px;border-radius:9px;border:2px solid var(--border);font-family:var(--f);font-weight:700;font-size:12px;background:var(--bg)">';opts.forEach(function(o){h+='<option value="'+o[0]+'"'+(o[0]==val?' selected':'')+'>'+o[1]+'</option>';});return h+'</select>';}
+function mini(lbl,val,onin){return '<div><div style="font-size:10px;font-weight:700;color:var(--muted);margin-bottom:3px">'+lbl+'</div><input class="sinp" style="width:100%" type="number" inputmode="numeric" value="'+val+'" oninput="'+onin+'"></div>';}
+function arow(lbl,key,val,pct){return '<div class="set-row"><div class="set-lb">'+lbl+'</div><div style="display:flex;align-items:center;gap:4px"><input class="sinp sinp-sm" type="number" inputmode="numeric" value="'+(pct?(val*100).toFixed(0):val)+'" oninput="sAssume(\''+key+'\',this,'+(pct?'true':'false')+')">'+(pct?'<span style="font-weight:700">%</span>':'<span style="font-weight:700">×</span>')+'</div></div>';}
 RENDER.settings=function(){
   var h='';
-  // identity
-  h+='<div class="card"><div class="clbl">👤 You</div>'
-   +'<div class="set-row"><div class="set-lb">Name</div><input class="sinp" style="text-align:left" value="'+esc(S.name)+'" oninput="sIdent(\'name\',this)"></div>'
-   +'<div class="set-row"><div class="set-lb">Email</div><input class="sinp" style="text-align:left;width:170px" value="'+esc(S.email)+'" oninput="sIdent(\'email\',this)"></div></div>';
-  // assumptions
-  h+='<div class="card"><div class="clbl">📐 Assumptions (used for the 5-year view)</div>'
-   +arow('Inflation / expense rise','inflation',S.inflation,true)
-   +arow('Yearly salary increment','increment',S.increment,true)
-   +arow('SIP step-up each year','sipStep',S.sipStep,true)
+  h+='<div class="card"><div class="clbl">👤 You</div><div class="set-row"><div class="set-lb">Name</div><input class="sinp" style="text-align:left" value="'+esc(S.name)+'" oninput="sIdent(\'name\',this)"></div></div>';
+  h+='<div class="card"><div class="clbl">📐 Assumptions</div>'
+   +arow('Inflation (for the Today\'s money view)','inflation',S.inflation,true)
    +arow('Market dips multiplier','bearMult',S.bearMult,false)
    +arow('Market soars multiplier','bullMult',S.bullMult,false)
    +'<div class="set-sb" style="padding-top:8px">Multipliers scale equity and gold returns only. PPF, EPF and cash never swing.</div></div>';
-  // income
-  h+='<div class="card"><div class="clbl">💵 Income</div>';
-  income.forEach(function(it){h+='<div style="border-bottom:1px solid var(--border);padding:10px 0">'
-    +'<div style="display:flex;gap:6px;align-items:center"><input class="sinp" style="flex:1;text-align:left" value="'+esc(it.name)+'" oninput="sT(\'income\',\''+it.id+'\',\'name\',this)"><span class="eva-x" onclick="rmItem(\'income\',\''+it.id+'\')">×</span></div>'
-    +'<div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap"><input class="sinp sinp-sm" type="number" inputmode="numeric" value="'+Math.round(n(it.amount))+'" oninput="sN(\'income\',\''+it.id+'\',\'amount\',this)">'
-    +sel([['monthly','/month'],['quarterly','/quarter'],['yearly','/year'],['oneoff','one-off'],['irregular','irregular']],it.cadence,'sT(\'income\',\''+it.id+'\',\'cadence\',this)')
-    +'<label style="font-size:11px;font-weight:700;color:var(--muted)"><input type="checkbox" '+ck(it.grows)+' onchange="sB(\'income\',\''+it.id+'\',\'grows\',this)"> grows</label>'
-    +'<label style="font-size:11px;font-weight:700;color:var(--muted)"><input type="checkbox" '+ck(it.taxable)+' onchange="sB(\'income\',\''+it.id+'\',\'taxable\',this)"> taxable</label></div></div>';});
-  h+='<div class="addrow"><input class="addinp" id="add-income" placeholder="Add income (freelance, rent, trading…)"><button class="addbtn" onclick="addItem(\'income\')">Add</button></div></div>';
-  // investments
-  h+='<div class="card"><div class="clbl">📈 Investments &amp; corpus</div><div class="set-sb" style="margin-bottom:6px">Enter what you already have (value now) and what you put in (invested), so gains show.</div>';
-  invests.forEach(function(it){var gl=n(it.openInv)>0?(n(it.openVal)-n(it.openInv))/n(it.openInv):0;
-    h+='<div style="border-bottom:1px solid var(--border);padding:10px 0">'
-    +'<div style="display:flex;gap:6px;align-items:center"><input class="sinp" style="flex:1;text-align:left" value="'+esc(it.name)+'" oninput="sT(\'invests\',\''+it.id+'\',\'name\',this)"><span class="eva-x" onclick="rmItem(\'invests\',\''+it.id+'\')">×</span></div>'
-    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">'
-    +mini('₹/month',Math.round(n(it.monthly)),'sN(\'invests\',\''+it.id+'\',\'monthly\',this)')
-    +mini('Return %',(n(it.ret)*100).toFixed(1),'sP(\'invests\',\''+it.id+'\',\'ret\',this)')
-    +mini('Value now ₹',Math.round(n(it.openVal)),'sN(\'invests\',\''+it.id+'\',\'openVal\',this)')
-    +mini('Invested ₹',Math.round(n(it.openInv)),'sN(\'invests\',\''+it.id+'\',\'openInv\',this)')
-    +'</div>'
-    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px"><label style="font-size:11px;font-weight:700;color:var(--muted)"><input type="checkbox" '+ck(it.market)+' onchange="sB(\'invests\',\''+it.id+'\',\'market\',this)"> market-linked (swings)</label>'
-    +'<span class="pill '+(gl>=0?'pill-g':'pill-r')+'">'+(gl>=0?'+':'')+fp1(gl)+' so far</span></div></div>';});
+  h+='<div class="card"><div class="clbl">💵 Monthly income (take-home)</div>';
+  income.forEach(function(it){h+='<div style="display:flex;gap:6px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><input class="sinp" style="flex:1;text-align:left" value="'+esc(it.name)+'" oninput="sT(\'income\',\''+it.id+'\',\'name\',this)"><input class="sinp sinp-sm" type="number" inputmode="numeric" value="'+Math.round(n(it.monthly))+'" oninput="sN(\'income\',\''+it.id+'\',\'monthly\',this)"><span class="eva-x" onclick="rmItem(\'income\',\''+it.id+'\')">×</span></div>';});
+  h+='<div class="addrow"><input class="addinp" id="add-income" placeholder="Add steady monthly income"><button class="addbtn" onclick="addItem(\'income\')">Add</button></div>'
+   +'<div class="set-sb" style="padding-top:6px">Variable or one-off pay: do not add it here. Log it in Track the month you receive it, and it flows into your savings.</div></div>';
+  h+='<div class="card"><div class="clbl">📈 Investments &amp; current value</div><div class="set-sb" style="margin-bottom:6px">Value now is what each holding is worth today. Monthly is what you usually put in.</div>';
+  invests.forEach(function(it){
+    h+='<div style="border-bottom:1px solid var(--border);padding:10px 0"><div style="display:flex;gap:6px;align-items:center"><input class="sinp" style="flex:1;text-align:left" value="'+esc(it.name)+'" oninput="sT(\'invests\',\''+it.id+'\',\'name\',this)">'+(it.cash?'<span class="pill pill-t">cash</span>':'<span class="eva-x" onclick="rmItem(\'invests\',\''+it.id+'\')">×</span>')+'</div>';
+    if(it.cash){h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">'+mini('Value now ₹',Math.round(n(it.openVal)),'sN(\'invests\',\''+it.id+'\',\'openVal\',this)')+mini('Return %',(n(it.ret)*100).toFixed(1),'sP(\'invests\',\''+it.id+'\',\'ret\',this)')+'</div><div class="set-sb" style="margin-top:4px">Your monthly free buffer flows in here automatically.</div>';}
+    else{h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">'+mini('₹/month',Math.round(n(it.monthly)),'sN(\'invests\',\''+it.id+'\',\'monthly\',this)')+mini('Return %',(n(it.ret)*100).toFixed(1),'sP(\'invests\',\''+it.id+'\',\'ret\',this)')+mini('Value now ₹',Math.round(n(it.openVal)),'sN(\'invests\',\''+it.id+'\',\'openVal\',this)')+'<div style="display:flex;align-items:flex-end"><label style="font-size:11px;font-weight:700;color:var(--muted)"><input type="checkbox" '+ck(it.market)+' onchange="sB(\'invests\',\''+it.id+'\',\'market\',this)"> swings with market</label></div></div>';}
+    h+='</div>';});
   h+='<div class="addrow"><input class="addinp" id="add-invests" placeholder="Add investment (NPS, stocks, FD…)"><button class="addbtn" onclick="addItem(\'invests\')">Add</button></div></div>';
-  // expenses
-  h+='<div class="card"><div class="clbl">🧾 Expenses</div>';
-  expenses.forEach(function(it){h+='<div style="display:flex;gap:6px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><input class="sinp" style="flex:1;text-align:left" value="'+esc(it.name)+'" oninput="sT(\'expenses\',\''+it.id+'\',\'name\',this)"><input class="sinp sinp-sm" type="number" inputmode="numeric" value="'+Math.round(n(it.monthly))+'" oninput="sN(\'expenses\',\''+it.id+'\',\'monthly\',this)"><label style="font-size:11px;font-weight:700;color:var(--muted)"><input type="checkbox" '+ck(it.grows)+' onchange="sB(\'expenses\',\''+it.id+'\',\'grows\',this)"> grows</label><span class="eva-x" onclick="rmItem(\'expenses\',\''+it.id+'\')">×</span></div>';});
+  h+='<div class="card"><div class="clbl">🧾 Monthly expenses</div>';
+  expenses.forEach(function(it){h+='<div style="display:flex;gap:6px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><input class="sinp" style="flex:1;text-align:left" value="'+esc(it.name)+'" oninput="sT(\'expenses\',\''+it.id+'\',\'name\',this)"><input class="sinp sinp-sm" type="number" inputmode="numeric" value="'+Math.round(n(it.monthly))+'" oninput="sN(\'expenses\',\''+it.id+'\',\'monthly\',this)"><span class="eva-x" onclick="rmItem(\'expenses\',\''+it.id+'\')">×</span></div>';});
   h+='<div class="addrow"><input class="addinp" id="add-expenses" placeholder="Add expense"><button class="addbtn" onclick="addItem(\'expenses\')">Add</button></div></div>';
-  // liabilities
   h+='<div class="card"><div class="clbl">🏷️ Loans (subtracted from net worth)</div>';
   if(!liabs.length)h+='<div class="set-sb">No loans. Add one if you have an EMI.</div>';
   liabs.forEach(function(it){h+='<div style="border-bottom:1px solid var(--border);padding:10px 0"><div style="display:flex;gap:6px;align-items:center"><input class="sinp" style="flex:1;text-align:left" value="'+esc(it.name)+'" oninput="sT(\'liabs\',\''+it.id+'\',\'name\',this)"><span class="eva-x" onclick="rmItem(\'liabs\',\''+it.id+'\')">×</span></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">'+mini('Outstanding ₹',Math.round(n(it.outstanding)),'sN(\'liabs\',\''+it.id+'\',\'outstanding\',this)')+mini('EMI ₹/month',Math.round(n(it.emi)),'sN(\'liabs\',\''+it.id+'\',\'emi\',this)')+'</div></div>';});
   h+='<div class="addrow"><input class="addinp" id="add-liabs" placeholder="Add loan (home, car, education…)"><button class="addbtn" onclick="addItem(\'liabs\')">Add</button></div></div>';
-  // events
-  h+='<div class="card"><div class="clbl">🎯 One-off events (big spends or windfalls)</div>';
-  if(!events.length)h+='<div class="set-sb">None. Example: a wedding in Year 2, or a bonus invested.</div>';
-  var tgt=[['cash','Cash']];invests.forEach(function(v){tgt.push([v.id,v.name]);});
-  events.forEach(function(ev){h+='<div style="border-bottom:1px solid var(--border);padding:10px 0"><div style="display:flex;gap:6px;align-items:center"><input class="sinp" style="flex:1;text-align:left" value="'+esc(ev.name)+'" oninput="sT(\'events\',\''+ev.id+'\',\'name\',this)"><span class="eva-x" onclick="rmItem(\'events\',\''+ev.id+'\')">×</span></div><div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;align-items:center">'+sel([['1','Year 1'],['2','Year 2'],['3','Year 3'],['4','Year 4'],['5','Year 5']],String(ev.year),'sT(\'events\',\''+ev.id+'\',\'year\',this)')+sel([['out','Spend'],['in','Receive']],ev.dir,'sT(\'events\',\''+ev.id+'\',\'dir\',this)')+'<input class="sinp sinp-sm" type="number" inputmode="numeric" value="'+Math.round(n(ev.amount))+'" oninput="sN(\'events\',\''+ev.id+'\',\'amount\',this)">'+sel(tgt,ev.target,'sT(\'events\',\''+ev.id+'\',\'target\',this)')+'</div></div>';});
-  h+='<div class="addrow"><input class="addinp" id="add-events" placeholder="Add event"><button class="addbtn" onclick="addItem(\'events\')">Add</button></div></div>';
-  // salary overrides
-  h+='<div class="card"><div class="clbl">🚀 Salary jumps (job changes)</div><div class="set-sb" style="margin-bottom:6px">Override a future year if you expect a big change.</div>';
-  for(var y=2;y<=5;y++){var ov=S.overrides[y];var ty=ov?ov.type:'normal';
-    h+='<div style="display:flex;gap:6px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><div class="set-lb" style="width:54px">Year '+y+'</div>'+sel([['normal','normal raise'],['pct','jump %'],['abs','set ₹/month']],ty,'setOvType('+y+',this)')+(ov?'<input class="sinp sinp-sm" type="number" inputmode="numeric" value="'+(ov.value||0)+'" oninput="setOvVal('+y+',this)">':'')+'</div>';}
-  h+='</div>';
-  // past years
-  h+='<div class="card"><div class="clbl">🕰️ Past years (for your history chart only)</div><div class="set-sb" style="margin-bottom:6px">Enter the value each holding had at the end of a past year. Display only, never double-counted.</div>';
-  var ys=pastYearsSorted();
-  ys.forEach(function(yr){h+='<div style="border-bottom:1px solid var(--border);padding:10px 0"><div style="display:flex;justify-content:space-between;align-items:center"><div class="set-lb">'+fyLabel(yr)+'</div><span class="eva-x" onclick="rmSnapYear('+yr+')">×</span></div>';
-    invests.forEach(function(v){var val=(pastSnaps[yr]&&pastSnaps[yr][v.id])||0;h+='<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0"><div class="set-sb">'+esc(v.name)+'</div><input class="sinp sinp-sm" type="number" inputmode="numeric" value="'+Math.round(val)+'" oninput="setSnap('+yr+',\''+v.id+'\',this)"></div>';});h+='</div>';});
-  h+='<div class="addrow"><input class="addinp" id="snap-yr" type="number" inputmode="numeric" placeholder="Year start, e.g. 2024"><button class="addbtn" onclick="addSnapYear()">Add</button></div></div>';
   h+='<div class="brow"><button class="btn btn-out" onclick="loadSampleConfirm()">Load sample data</button><button class="btn btn-teal" onclick="toast(\'✓ All saved\')">Done</button></div>';
   document.getElementById('set-body').innerHTML=h;
 };
-function arow(lbl,key,val,pct){return '<div class="set-row"><div class="set-lb">'+lbl+'</div><div style="display:flex;align-items:center;gap:4px"><input class="sinp sinp-sm" type="number" inputmode="numeric" value="'+(pct?(val*100).toFixed(0):val)+'" oninput="sAssume(\''+key+'\',this,'+(pct?'true':'false')+')">'+(pct?'<span style="font-weight:700">%</span>':'<span style="font-weight:700">×</span>')+'</div></div>';}
-function mini(lbl,val,onin){return '<div><div style="font-size:10px;font-weight:700;color:var(--muted);margin-bottom:3px">'+lbl+'</div><input class="sinp" style="width:100%" type="number" inputmode="numeric" value="'+val+'" oninput="'+onin+'"></div>';}
-function addItem(arr){var inp=document.getElementById('add-'+arr);var v=(inp.value||'').trim();if(!v)return;
-  if(arr==='income')income.push({id:uid(),name:v,amount:0,cadence:'monthly',grows:false,growthRate:null,taxable:true});
-  else if(arr==='invests')invests.push({id:uid(),name:v,monthly:0,ret:0.10,openVal:0,openInv:0,market:true,cap:0,ic:'⭐'});
-  else if(arr==='expenses')expenses.push({id:uid(),name:v,monthly:0,grows:true,growthRate:null});
-  else if(arr==='liabs')liabs.push({id:uid(),name:v,outstanding:0,emi:0,rate:0.10});
-  else if(arr==='events')events.push({id:uid(),name:v,year:1,amount:0,dir:'out',target:'cash'});
+function addItem(arr){var inp=document.getElementById('add-'+arr),v=(inp.value||'').trim();if(!v)return;
+  if(arr==='income')income.push({id:uid(),name:v,monthly:0});
+  else if(arr==='invests')invests.push({id:uid(),name:v,monthly:0,ret:0.10,openVal:0,market:true,ic:'⭐'});
+  else if(arr==='expenses')expenses.push({id:uid(),name:v,monthly:0});
+  else if(arr==='liabs')liabs.push({id:uid(),name:v,outstanding:0,emi:0});
   save();RENDER.settings();}
-function rmItem(arr,id){var a=window[arr];if((arr==='income'||arr==='invests'||arr==='expenses')&&a.length<=1){toast('Keep at least one');return;}
+function rmItem(arr,id){var a=window[arr];
+  if(arr==='invests'){var it=a.find(function(x){return x.id===id;});if(it&&it.cash){toast('Cash line stays');return;}}
+  if((arr==='income'||arr==='invests'||arr==='expenses')&&a.length<=1){toast('Keep at least one');return;}
   window[arr]=a.filter(function(x){return x.id!==id;});save();RENDER.settings();}
-function setOvType(y,el){var v=el.value;if(v==='normal')delete S.overrides[y];else{S.overrides[y]={type:v,value:S.overrides[y]?S.overrides[y].value:0};}save();RENDER.settings();}
-function setOvVal(y,el){if(S.overrides[y]){S.overrides[y].value=n(el.value);save();}}
-function addSnapYear(){var y=parseInt(document.getElementById('snap-yr').value);if(!y||y<2000||y>2100){toast('Enter a year like 2024');return;}pastSnaps[y]=pastSnaps[y]||{};save();RENDER.settings();}
-function setSnap(yr,id,el){pastSnaps[yr]=pastSnaps[yr]||{};pastSnaps[yr][id]=n(el.value);save();}
-function rmSnapYear(yr){delete pastSnaps[yr];save();RENDER.settings();}
+function loadSampleConfirm(){if(!confirm('Replace your current data with the sample?'))return;sampleData();save();toast('Sample loaded');RENDER.settings();}
 
-/* ============ BACKUP / RESET ============ */
-function exportData(){var data=localStorage.getItem(LS)||'{}';var blob=new Blob([data],{type:'application/json'});var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download='sprout-backup-'+today().toISOString().slice(0,10)+'.json';document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(url);},1000);toast('Backup downloaded');}
-function importData(el){var f=el.files[0];if(!f)return;var r=new FileReader();r.onload=function(){try{var d=JSON.parse(r.result);if(!d.S){toast('That file is not a Sprout backup');return;}localStorage.setItem(LS,r.result);location.reload();}catch(e){toast('Could not read that file');}};r.readAsText(f);el.value='';}
-function loadSampleConfirm(){if(!confirm('Replace your current data with the sample? Back up first if needed.'))return;sampleData();S.overrides={};save();toast('Sample loaded');RENDER.settings();}
-function resetAll(){if(!confirm('Delete everything and start over? This cannot be undone.'))return;localStorage.removeItem(LS);location.reload();}
+/* ============ BACKUP ============ */
+function exportData(){var data=localStorage.getItem(LS)||'{}',blob=new Blob([data],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='sprout-backup-'+today().toISOString().slice(0,10)+'.json';document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(url);},1000);toast('Backup downloaded');}
+function importData(el){var f=el.files[0];if(!f)return;var r=new FileReader();r.onload=function(){try{var d=JSON.parse(r.result);if(!d.S){toast('Not a Sprout backup');return;}localStorage.setItem(LS,r.result);location.reload();}catch(e){toast('Could not read that file');}};r.readAsText(f);el.value='';}
+function resetAll(){if(!confirm('Delete everything and start over?'))return;localStorage.removeItem(LS);location.reload();}
 
 /* ---- init ---- */
 (function init(){
   var had=load();
-  if(had && S.onboarded){
-    document.getElementById('ob').classList.add('hide');
-    applyIdentity(); boot();
-  } else {
-    // show onboarding (default visible)
-  }
+  if(had && S.onboarded){ document.getElementById('ob').classList.add('hide'); applyIdentity(); boot(); }
 })();
 </script>
 </body>
