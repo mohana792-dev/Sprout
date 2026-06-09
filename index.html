@@ -6,7 +6,6 @@
 <title>Sprout · figure out your money</title>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,600;0,700;0,800;0,900;1,400&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root{
   --bg:#F2F4FF;--card:#fff;--ink:#0F172A;--muted:#7C89A8;--border:#E4E9F7;
@@ -178,27 +177,8 @@ body{font-family:var(--f);background:var(--bg);color:var(--ink);height:100%;font
 </head>
 <body>
 <div class="app">
-  <!-- LOGIN -->
-  <div class="ob hide" id="login">
-    <div class="ob-logo">🌱</div>
-    <div class="ob-h">Sign in to <span>Sprout</span></div>
-    <div class="ob-sub">Your money, saved to your own account and synced across your phones. We email you a sign-in link, so there is no password to remember.</div>
-    <div id="login-form-wrap" style="margin-top:24px">
-      <input class="ob-inp" id="login-email" type="email" placeholder="you@email.com" autocomplete="email" inputmode="email">
-      <button class="ob-btn" onclick="sendLink()">Email me a sign-in link ✉️</button>
-      <div id="login-msg" style="color:#FCA5A5;font-size:12px;text-align:center;margin-top:10px;font-weight:700"></div>
-    </div>
-    <div id="login-sent" style="display:none;text-align:center;margin-top:24px">
-      <div style="font-size:44px">📬</div>
-      <div class="ob-pt-t" style="margin-top:10px">Check your email</div>
-      <div class="ob-sub" style="margin-top:6px">We sent a sign-in link to <b id="login-sent-email" style="color:#fff"></b>. Open it on this device to continue.</div>
-      <button class="ob-skip" onclick="resetLogin()" style="margin-top:14px">Use a different email</button>
-    </div>
-    <div class="ob-foot">Your data is stored privately in your own account. Only you can see it.</div>
-  </div>
-
   <!-- ONBOARDING -->
-  <div class="ob hide" id="ob">
+  <div class="ob" id="ob">
     <div class="ob-logo">🌱</div>
     <div class="ob-h">Welcome to <span>Sprout</span></div>
     <div class="ob-sub">Figure out your money and watch it grow. A simple way to track what you earn, spend and invest, and see where you land in 5 years.</div>
@@ -207,8 +187,7 @@ body{font-family:var(--f);background:var(--bg);color:var(--ink);height:100%;font
       <div class="ob-pt"><div class="ob-pt-ic">📈</div><div><div class="ob-pt-t">See 5 years ahead</div><div class="ob-pt-d">Watch your money compound across good markets and bad.</div></div></div>
       <div class="ob-pt"><div class="ob-pt-ic">🔒</div><div><div class="ob-pt-t">Stays on your device</div><div class="ob-pt-d">Nothing leaves your phone. No account, no tracking.</div></div></div>
     </div>
-    <input class="ob-inp" id="ob-name" placeholder="Your name" maxlength="40">
-    <input class="ob-inp" id="ob-email" type="email" placeholder="Email (for bill reminders, optional)" maxlength="80">
+    <input class="ob-inp" id="ob-name" placeholder="Your name (optional)" maxlength="40">
     <button class="ob-btn" onclick="finishOnboard(true)">Start with sample data 🌱</button>
     <button class="ob-skip" onclick="finishOnboard(false)">Start empty instead</button>
     <div class="ob-foot">Sample data shows a ₹50,000 salary example you can edit or clear anytime.</div>
@@ -323,7 +302,6 @@ body{font-family:var(--f);background:var(--bg);color:var(--ink);height:100%;font
       <input type="file" id="imp-file" accept="application/json,.json" style="display:none" onchange="importData(this)">
       <div class="muted-note">Sprout keeps everything in this browser only. Back up if you switch phones or clear your browser.</div>
       <div class="bwrap"><button class="btn btn-out" style="color:var(--red)" onclick="resetAll()">Reset everything</button></div>
-      <div id="signout-wrap" style="display:none"><div class="tile" onclick="signOut()"><div class="tile-ic" style="background:var(--coral-l)">🚪</div><div><div class="tile-t">Sign out</div><div class="tile-s" id="signout-email">Signed in</div></div></div></div>
       <div style="height:8px"></div>
     </div>
 
@@ -362,17 +340,6 @@ body{font-family:var(--f);background:var(--bg);color:var(--ink);height:100%;font
 
 <script>
 'use strict';
-/* ======================================================================
-   SUPABASE SETUP  ·  paste your two values between the quotes below
-   Find them in Supabase: Settings -> API keys (or "API")
-   ====================================================================== */
-var SUPABASE_URL      = 'https://zhnqfkqjsomfwcgadajc.supabase.co';
-var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpobnFma3Fqc29tZndjZ2FkYWpjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwMjg1NjcsImV4cCI6MjA5NjYwNDU2N30._lMVa_Dlsrt2m9M3MivP6X6xvWsB9tFSRyZY9yObi7o';
-/* ====================================================================== */
-var sb = (window.supabase && SUPABASE_URL.indexOf('PASTE_')<0)
-  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
-var CLOUD = !!sb;
-var user = null;
 /* ============ SPROUT · core state & data model ============ */
 var SCHEMA = 2;
 var S = {
@@ -440,45 +407,23 @@ function emptyData(){
 
 /* ============ PERSIST ============ */
 var LS='sprout_v2';
-function stateObj(){return {S:S,income:income,invests:invests,expenses:expenses,liabs:liabs,events:events,
-  pastSnaps:pastSnaps,monthData:monthData,checkState:checkState,customTasks:customTasks,bills:bills};}
-function applyBlob(d){
-  if(!d)return;
-  if(d.S){for(var k in S){if(d.S[k]!==undefined)S[k]=d.S[k];}}
-  income=d.income||[];invests=d.invests||[];expenses=d.expenses||[];
-  liabs=d.liabs||[];events=d.events||[];pastSnaps=d.pastSnaps||{};
-  monthData=d.monthData||{};checkState=d.checkState||{};customTasks=d.customTasks||[];bills=d.bills||[];
-}
 function save(){
-  try{ localStorage.setItem(LS,JSON.stringify(stateObj())); }
-  catch(e){ if(e&&e.name==='QuotaExceededError') toast('Storage full. Back up and trim old data.'); }
-  cloudSave();
-}
-var _cloudT=null;
-function cloudSave(){
-  if(!CLOUD||!user)return;
-  clearTimeout(_cloudT);
-  _cloudT=setTimeout(function(){
-    sb.from('sprout_data').upsert({user_id:user.id,data:stateObj(),updated_at:new Date().toISOString()})
-      .then(function(r){ if(r.error)console.warn('cloud save:',r.error.message); });
-  },800);
-}
-function loadCloud(cb){
-  if(!CLOUD||!user){cb(false);return;}
-  sb.from('sprout_data').select('data').eq('user_id',user.id).maybeSingle()
-    .then(function(r){
-      if(r.error){console.warn('cloud load:',r.error.message);
-        // fall back to whatever is cached locally
-        cb(load());return;}
-      if(r.data&&r.data.data){applyBlob(r.data.data);try{localStorage.setItem(LS,JSON.stringify(stateObj()));}catch(e){}cb(true);}
-      else cb(false);
-    });
+  try{
+    localStorage.setItem(LS,JSON.stringify({
+      S:S,income:income,invests:invests,expenses:expenses,liabs:liabs,events:events,
+      pastSnaps:pastSnaps,monthData:monthData,checkState:checkState,customTasks:customTasks,bills:bills
+    }));
+  }catch(e){ if(e&&e.name==='QuotaExceededError') toast('Storage full. Back up and trim old data.'); }
 }
 function load(){
   try{
     var raw=localStorage.getItem(LS);
     if(!raw){return false;}
-    applyBlob(JSON.parse(raw));
+    var d=JSON.parse(raw);
+    if(d.S){for(var k in S){if(d.S[k]!==undefined)S[k]=d.S[k];}}
+    income=d.income||[];invests=d.invests||[];expenses=d.expenses||[];
+    liabs=d.liabs||[];events=d.events||[];pastSnaps=d.pastSnaps||{};
+    monthData=d.monthData||{};checkState=d.checkState||{};customTasks=d.customTasks||[];bills=d.bills||[];
     return true;
   }catch(e){ console.warn('load failed',e); return false; }
 }
@@ -513,7 +458,6 @@ var RENDER={}; // render functions registered in later steps
 /* ============ ONBOARDING ============ */
 function finishOnboard(withSample){
   S.name=(document.getElementById('ob-name').value||'').trim();
-  S.email=(document.getElementById('ob-email').value||'').trim();
   if(withSample)sampleData(); else emptyData();
   S.onboarded=true; save();
   document.getElementById('ob').classList.add('hide');
@@ -735,7 +679,7 @@ RENDER.checks=function(){
   var bh='';
   for(var i=0;i<bills.length;i++){var b=bills[i];
     bh+='<div class="card" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:14px;font-weight:800">'+esc(b.name)+'</div><div style="font-size:11px;color:var(--muted);font-weight:600;margin-top:2px">'+fc(b.amount)+' · the '+b.day+' of each month · remind '+b.remindDays+'d before</div></div><div class="eva-x" onclick="rmBill(\''+b.id+'\')">×</div></div>'
-      +'<div class="brow" style="padding:10px 0 0;margin:0"><button class="btn btn-out" onclick="downloadICS(\''+b.id+'\')">📅 Add to calendar</button><button class="btn btn-out" onclick="emailBill(\''+b.id+'\')">✉️ Email me</button></div></div>';
+      +'<div style="padding:10px 0 0"><button class="btn btn-out" onclick="downloadICS(\''+b.id+'\')">📅 Add to calendar</button></div></div>';
   }
   if(!bills.length)bh='<div class="muted-note">No bills yet. Add one below to get calendar and email reminders.</div>';
   document.getElementById('c-bills').innerHTML=bh;
@@ -934,12 +878,6 @@ RENDER.settings=function(){
   ys.forEach(function(yr){h+='<div style="border-bottom:1px solid var(--border);padding:10px 0"><div style="display:flex;justify-content:space-between;align-items:center"><div class="set-lb">'+fyLabel(yr)+'</div><span class="eva-x" onclick="rmSnapYear('+yr+')">×</span></div>';
     invests.forEach(function(v){var val=(pastSnaps[yr]&&pastSnaps[yr][v.id])||0;h+='<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0"><div class="set-sb">'+esc(v.name)+'</div><input class="sinp sinp-sm" type="number" inputmode="numeric" value="'+Math.round(val)+'" oninput="setSnap('+yr+',\''+v.id+'\',this)"></div>';});h+='</div>';});
   h+='<div class="addrow"><input class="addinp" id="snap-yr" type="number" inputmode="numeric" placeholder="Year start, e.g. 2024"><button class="addbtn" onclick="addSnapYear()">Add</button></div></div>';
-  // emailjs
-  h+='<div class="card"><div class="clbl">✉️ Email reminders (optional, free EmailJS)</div><div class="set-sb" style="margin-bottom:6px">Sign up free at emailjs.com, connect Gmail, make a template, paste the 3 keys here. Calendar reminders work without this.</div>'
-   +'<div class="set-row"><div class="set-lb">Public key</div><input class="sinp" style="text-align:left;width:170px" value="'+esc(S.ejsKey)+'" oninput="sIdent(\'ejsKey\',this)"></div>'
-   +'<div class="set-row"><div class="set-lb">Service ID</div><input class="sinp" style="text-align:left;width:170px" value="'+esc(S.ejsService)+'" oninput="sIdent(\'ejsService\',this)"></div>'
-   +'<div class="set-row"><div class="set-lb">Template ID</div><input class="sinp" style="text-align:left;width:170px" value="'+esc(S.ejsTemplate)+'" oninput="sIdent(\'ejsTemplate\',this)"></div>'
-   +'<div class="set-sb" style="padding-top:6px">Template should use variables: to_email, to_name, subject, message.</div></div>';
   h+='<div class="brow"><button class="btn btn-out" onclick="loadSampleConfirm()">Load sample data</button><button class="btn btn-teal" onclick="toast(\'✓ All saved\')">Done</button></div>';
   document.getElementById('set-body').innerHTML=h;
 };
@@ -966,55 +904,14 @@ function importData(el){var f=el.files[0];if(!f)return;var r=new FileReader();r.
 function loadSampleConfirm(){if(!confirm('Replace your current data with the sample? Back up first if needed.'))return;sampleData();S.overrides={};save();toast('Sample loaded');RENDER.settings();}
 function resetAll(){if(!confirm('Delete everything and start over? This cannot be undone.'))return;localStorage.removeItem(LS);location.reload();}
 
-/* ============ AUTH ============ */
-function showLogin(){document.getElementById('login').classList.remove('hide');}
-function hideLogin(){document.getElementById('login').classList.add('hide');}
-function showOB(){document.getElementById('ob').classList.remove('hide');}
-function hideOB(){document.getElementById('ob').classList.add('hide');}
-function loginMsg(m){var e=document.getElementById('login-msg');if(e)e.textContent=m||'';}
-function resetLogin(){document.getElementById('login-sent').style.display='none';document.getElementById('login-form-wrap').style.display='block';loginMsg('');}
-function sendLink(){
-  if(!CLOUD){toast('Add your Supabase keys in the file first');return;}
-  var em=(document.getElementById('login-email').value||'').trim();
-  if(!em||em.indexOf('@')<1){loginMsg('Enter a valid email');return;}
-  loginMsg('Sending…');
-  sb.auth.signInWithOtp({email:em,options:{emailRedirectTo:location.href.split('#')[0]}})
-    .then(function(r){
-      if(r.error){loginMsg(r.error.message);}
-      else{document.getElementById('login-sent-email').textContent=em;document.getElementById('login-form-wrap').style.display='none';document.getElementById('login-sent').style.display='block';loginMsg('');}
-    });
-}
-function signOut(){ if(sb)sb.auth.signOut().then(function(){location.reload();}); else location.reload(); }
-function updSignout(){var w=document.getElementById('signout-wrap');if(CLOUD&&user){w.style.display='block';document.getElementById('signout-email').textContent='Signed in as '+(user.email||'you');}else w.style.display='none';}
-function startApp(found){
-  hideLogin();
-  if(found && S.onboarded){ hideOB(); applyIdentity(); boot(); }
-  else { showOB(); }
-  updSignout();
-}
-function onLoggedIn(u){
-  user=u; loginMsg('Signing you in…');
-  loadCloud(function(found){ startApp(found); });
-}
-
 /* ---- init ---- */
 (function init(){
-  if(CLOUD){
-    showLogin();
-    sb.auth.getSession().then(function(res){
-      var sess=res&&res.data?res.data.session:null;
-      if(sess&&sess.user){ onLoggedIn(sess.user); }
-    });
-    sb.auth.onAuthStateChange(function(ev,sess){
-      if(sess&&sess.user){ if(!user||user.id!==sess.user.id) onLoggedIn(sess.user); }
-      else { user=null; resetLogin(); showLogin(); }
-    });
+  var had=load();
+  if(had && S.onboarded){
+    document.getElementById('ob').classList.add('hide');
+    applyIdentity(); boot();
   } else {
-    // Local-only mode (Supabase keys not added yet): works on this device.
-    hideLogin();
-    var had=load();
-    if(had && S.onboarded){ hideOB(); applyIdentity(); boot(); }
-    else { showOB(); }
+    // show onboarding (default visible)
   }
 })();
 </script>
